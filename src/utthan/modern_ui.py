@@ -18,29 +18,32 @@ from .reports import (
     open_file,
 )
 
-# Modern light visual system
-APP_BG = "#F5F7FB"
+# Restrained desktop design system: neutral surfaces, one accent, compact rhythm.
+APP_BG = "#F3F4F6"
 SURFACE = "#FFFFFF"
-SIDEBAR = "#101828"
-SIDEBAR_HOVER = "#1D2939"
-PRIMARY = "#635BFF"
-PRIMARY_HOVER = "#5148E5"
-TEAL = "#12B76A"
-TEAL_SOFT = "#ECFDF3"
-BLUE = "#2E90FA"
-BLUE_SOFT = "#EFF8FF"
-AMBER = "#F79009"
-AMBER_SOFT = "#FFFAEB"
-RED = "#F04438"
-RED_SOFT = "#FEF3F2"
-PURPLE_SOFT = "#F4F3FF"
-TEXT = "#101828"
-TEXT_SECONDARY = "#475467"
-MUTED = "#98A2B3"
-BORDER = "#EAECF0"
+SIDEBAR = "#111827"
+SIDEBAR_HOVER = "#1F2937"
+PRIMARY = "#1D4ED8"
+PRIMARY_HOVER = "#1E40AF"
+SUCCESS = "#15803D"
+SUCCESS_SOFT = "#F0FDF4"
+BLUE_SOFT = "#EFF6FF"
+WARNING = "#B45309"
+WARNING_SOFT = "#FFFBEB"
+RED = "#B91C1C"
+RED_SOFT = "#FEF2F2"
+SELECTED = "#EFF6FF"
+TEXT = "#111827"
+TEXT_SECONDARY = "#4B5563"
+MUTED = "#6B7280"
+BORDER = "#D1D5DB"
+SUBTLE_BORDER = "#E5E7EB"
 FONT = "Segoe UI"
 FONT_MEDIUM = "Segoe UI Semibold"
 TREE_STYLE = "Modern.Treeview"
+PANEL_RADIUS = 6
+CONTROL_RADIUS = 5
+ISSUE_LOAN_LABEL = "Issue loan"
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -70,16 +73,17 @@ class Modal(ctk.CTkToplevel):
         self.configure(fg_color=APP_BG)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
-        header = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=76)
+        header = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=64,
+                      border_width=1, border_color=SUBTLE_BORDER)
         header.grid(row=0, column=0, sticky="ew")
         ctk.CTkLabel(header, text=title, text_color=TEXT,
-                     font=(FONT_MEDIUM, 20)).pack(side="left", padx=24, pady=22)
-        ctk.CTkButton(header, text="×", width=34, height=34, corner_radius=17,
-                      fg_color="#F2F4F7", hover_color=BORDER, text_color=TEXT_SECONDARY,
-                      font=(FONT, 20), command=self.destroy).pack(side="right", padx=20)
+                 font=(FONT_MEDIUM, 17)).pack(side="left", padx=22, pady=19)
+        ctk.CTkButton(header, text="×", width=32, height=32, corner_radius=CONTROL_RADIUS,
+                  fg_color="transparent", hover_color="#F3F4F6", text_color=TEXT_SECONDARY,
+                  font=(FONT, 18), command=self.destroy).pack(side="right", padx=18)
         self.body = ctk.CTkScrollableFrame(
             self, fg_color=APP_BG, corner_radius=0,
-            scrollbar_button_color="#D0D5DD", scrollbar_button_hover_color=MUTED,
+            scrollbar_button_color="#9CA3AF", scrollbar_button_hover_color=MUTED,
         )
         self.body.grid(row=1, column=0, sticky="nsew", padx=18, pady=12)
         self.body.grid_columnconfigure(1, weight=1)
@@ -101,6 +105,7 @@ class ModernSocietyApp(ctk.CTk):
         self.minsize(1120, 720)
         self.configure(fg_color=APP_BG)
         self.nav_buttons: dict[str, ctk.CTkButton] = {}
+        self.nav_markers: dict[str, ctk.CTkFrame] = {}
         self.active_page = ""
         self._configure_table_style()
         self._build_shell()
@@ -111,103 +116,105 @@ class ModernSocietyApp(ctk.CTk):
         style.theme_use("clam")
         style.configure(
             TREE_STYLE, background=SURFACE, fieldbackground=SURFACE,
-            foreground=TEXT_SECONDARY, rowheight=36, borderwidth=0,
+            foreground=TEXT_SECONDARY, rowheight=34, borderwidth=0,
             relief="flat", font=(FONT, 9),
         )
         style.configure(
-            "Modern.Treeview.Heading", background="#F9FAFB", foreground=TEXT_SECONDARY,
-            borderwidth=0, relief="flat", padding=(9, 11), font=(FONT_MEDIUM, 9),
+            "Modern.Treeview.Heading", background="#F9FAFB", foreground="#374151",
+            borderwidth=0, relief="flat", padding=(8, 9), font=(FONT_MEDIUM, 8),
         )
         style.map(
-            TREE_STYLE, background=[("selected", PURPLE_SOFT)],
+            TREE_STYLE, background=[("selected", SELECTED)],
             foreground=[("selected", TEXT)],
         )
-        style.map("Modern.Treeview.Heading", background=[("active", "#F2F4F7")])
+        style.map("Modern.Treeview.Heading", background=[("active", "#F3F4F6")])
 
     def _build_shell(self) -> None:
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        sidebar = ctk.CTkFrame(self, width=246, corner_radius=0, fg_color=SIDEBAR)
+        sidebar = ctk.CTkFrame(self, width=224, corner_radius=0, fg_color=SIDEBAR)
         sidebar.grid(row=0, column=0, sticky="nsew")
         sidebar.grid_propagate(False)
         sidebar.grid_rowconfigure(9, weight=1)
 
         brand = ctk.CTkFrame(sidebar, fg_color="transparent")
-        brand.grid(row=0, column=0, sticky="ew", padx=18, pady=(24, 30))
-        mark = ctk.CTkLabel(
-            brand, text="U", width=42, height=42, corner_radius=12,
-            fg_color=PRIMARY, text_color="white", font=(FONT_MEDIUM, 20),
-        )
-        mark.pack(side="left")
+        brand.grid(row=0, column=0, sticky="ew", padx=22, pady=(24, 30))
+        ctk.CTkFrame(brand, width=3, height=34, corner_radius=0,
+                     fg_color="#60A5FA").pack(side="left", padx=(0, 11))
         brand_text = ctk.CTkFrame(brand, fg_color="transparent")
-        brand_text.pack(side="left", padx=11)
-        ctk.CTkLabel(brand_text, text="UTTHAN", text_color="white",
-                     font=(FONT_MEDIUM, 17)).pack(anchor="w")
-        ctk.CTkLabel(brand_text, text="Society Manager", text_color="#98A2B3",
-                     font=(FONT, 10)).pack(anchor="w")
+        brand_text.pack(side="left")
+        ctk.CTkLabel(brand_text, text="Utthan", text_color="white",
+                     font=(FONT_MEDIUM, 16)).pack(anchor="w")
+        ctk.CTkLabel(brand_text, text="Society administration", text_color="#9CA3AF",
+                     font=(FONT, 8)).pack(anchor="w")
 
-        ctk.CTkLabel(sidebar, text="WORKSPACE", text_color="#667085",
-                     font=(FONT_MEDIUM, 9)).grid(row=1, column=0, sticky="w", padx=26, pady=(0, 8))
+        ctk.CTkLabel(sidebar, text="MANAGEMENT", text_color="#6B7280",
+                     font=(FONT_MEDIUM, 8)).grid(row=1, column=0, sticky="w", padx=24, pady=(0, 9))
         nav_items = [
-            ("dashboard", "Overview", "⌂", self.show_dashboard),
-            ("dues", "Monthly dues", "▦", self.show_dues),
-            ("members", "Members", "♙", self.show_members),
-            ("loans", "Loans", "₹", self.show_loans),
-            ("cashbook", "Cashbook", "↕", self.show_cashbook),
-            ("reports", "Reports & backup", "▤", self.show_reports),
-            ("settings", "Settings", "⚙", self.show_settings),
+            ("dashboard", "Overview", self.show_dashboard),
+            ("dues", "Monthly dues", self.show_dues),
+            ("members", "Members", self.show_members),
+            ("loans", "Loans", self.show_loans),
+            ("cashbook", "Cashbook", self.show_cashbook),
+            ("reports", "Reports and backup", self.show_reports),
+            ("settings", "Settings", self.show_settings),
         ]
-        for index, (key, label, icon, command) in enumerate(nav_items, 2):
+        for index, (key, label, command) in enumerate(nav_items, 2):
+            row = ctk.CTkFrame(sidebar, fg_color="transparent", height=40)
+            row.grid(row=index, column=0, sticky="ew", padx=12, pady=1)
+            row.grid_columnconfigure(1, weight=1)
+            marker = ctk.CTkFrame(row, width=3, height=24, corner_radius=0,
+                                  fg_color="transparent")
+            marker.grid(row=0, column=0, padx=(0, 7))
             button = ctk.CTkButton(
-                sidebar, text=f"  {icon}    {label}", anchor="w", width=210, height=44,
-                corner_radius=9, fg_color="transparent", hover_color=SIDEBAR_HOVER,
-                text_color="#D0D5DD", font=(FONT, 11),
+                row, text=label, anchor="w", height=38,
+                corner_radius=CONTROL_RADIUS, fg_color="transparent", hover_color=SIDEBAR_HOVER,
+                text_color="#D1D5DB", font=(FONT, 10),
                 command=lambda k=key, c=command: self.navigate(k, c),
             )
-            button.grid(row=index, column=0, padx=18, pady=3)
+            button.grid(row=0, column=1, sticky="ew")
             self.nav_buttons[key] = button
+            self.nav_markers[key] = marker
 
-        profile = ctk.CTkFrame(sidebar, fg_color="#1D2939", corner_radius=12)
-        profile.grid(row=10, column=0, sticky="ew", padx=18, pady=18)
-        dot = ctk.CTkLabel(profile, text="●", text_color=TEAL, width=18,
-                           font=(FONT, 12))
-        dot.pack(side="left", padx=(13, 3), pady=13)
+        profile = ctk.CTkFrame(sidebar, fg_color="transparent", corner_radius=0,
+                               border_width=1, border_color="#374151")
+        profile.grid(row=10, column=0, sticky="ew", padx=16, pady=18)
         info = ctk.CTkFrame(profile, fg_color="transparent")
-        info.pack(side="left", pady=10)
-        ctk.CTkLabel(info, text="Offline mode", text_color="white",
-                     font=(FONT_MEDIUM, 10)).pack(anchor="w")
-        ctk.CTkLabel(info, text="Data stays on this PC", text_color="#98A2B3",
+        info.pack(side="left", padx=12, pady=10)
+        ctk.CTkLabel(info, text="Local database", text_color="#E5E7EB",
+                     font=(FONT_MEDIUM, 9)).pack(anchor="w")
+        ctk.CTkLabel(info, text="Stored on this computer", text_color="#9CA3AF",
                      font=(FONT, 8)).pack(anchor="w")
 
         main = ctk.CTkFrame(self, fg_color=APP_BG, corner_radius=0)
         main.grid(row=0, column=1, sticky="nsew")
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(1, weight=1)
-        topbar = ctk.CTkFrame(main, fg_color=SURFACE, corner_radius=0, height=68,
-                              border_width=1, border_color=BORDER)
+        topbar = ctk.CTkFrame(main, fg_color=SURFACE, corner_radius=0, height=56,
+                      border_width=1, border_color=SUBTLE_BORDER)
         topbar.grid(row=0, column=0, sticky="ew")
         topbar.grid_propagate(False)
         ctk.CTkLabel(
             topbar, text=datetime.now().strftime("%A, %d %B %Y"),
-            text_color=TEXT_SECONDARY, font=(FONT, 10),
-        ).pack(side="left", padx=28)
+            text_color=TEXT_SECONDARY, font=(FONT, 9),
+        ).pack(side="left", padx=24)
         ctk.CTkLabel(
-            topbar, text="LOCAL DATABASE", corner_radius=12, height=26,
-            fg_color=TEAL_SOFT, text_color="#027A48", font=(FONT_MEDIUM, 8),
-        ).pack(side="right", padx=28)
+            topbar, text="Offline · local storage", text_color=MUTED, font=(FONT, 8),
+        ).pack(side="right", padx=24)
         self.content = ctk.CTkFrame(main, fg_color=APP_BG, corner_radius=0)
-        self.content.grid(row=1, column=0, sticky="nsew", padx=28, pady=24)
+        self.content.grid(row=1, column=0, sticky="nsew", padx=24, pady=20)
 
     def navigate(self, key: str, command) -> None:
         self.active_page = key
         for name, button in self.nav_buttons.items():
             active = name == key
             button.configure(
-                fg_color=PRIMARY if active else "transparent",
-                hover_color=PRIMARY_HOVER if active else SIDEBAR_HOVER,
+                fg_color=SIDEBAR_HOVER if active else "transparent",
+                hover_color=SIDEBAR_HOVER,
                 text_color="white" if active else "#D0D5DD",
-                font=(FONT_MEDIUM if active else FONT, 11),
+                font=(FONT_MEDIUM if active else FONT, 10),
             )
+            self.nav_markers[name].configure(fg_color="#60A5FA" if active else "transparent")
         command()
 
     def clear(self) -> None:
@@ -216,13 +223,13 @@ class ModernSocietyApp(ctk.CTk):
 
     def page_header(self, title: str, subtitle: str) -> ctk.CTkFrame:
         header = ctk.CTkFrame(self.content, fg_color="transparent")
-        header.pack(fill="x", pady=(0, 20))
+        header.pack(fill="x", pady=(0, 16))
         text = ctk.CTkFrame(header, fg_color="transparent")
         text.pack(side="left")
         ctk.CTkLabel(text, text=title, text_color=TEXT,
-                     font=(FONT_MEDIUM, 26)).pack(anchor="w")
+                     font=(FONT_MEDIUM, 21)).pack(anchor="w")
         ctk.CTkLabel(text, text=subtitle, text_color=TEXT_SECONDARY,
-                     font=(FONT, 10)).pack(anchor="w", pady=(3, 0))
+                     font=(FONT, 9)).pack(anchor="w", pady=(2, 0))
         return header
 
     def button(
@@ -230,9 +237,8 @@ class ModernSocietyApp(ctk.CTk):
     ) -> ctk.CTkButton:
         palette = {
             "primary": (PRIMARY, PRIMARY_HOVER, "white"),
-            "success": (TEAL, "#039855", "white"),
             "danger": ("transparent", RED_SOFT, RED),
-            "secondary": (SURFACE, "#F2F4F7", TEXT_SECONDARY),
+            "secondary": (SURFACE, "#F3F4F6", TEXT_SECONDARY),
         }
         fg, hover, text_color = palette[variant]
         border_width = 1 if variant in {"secondary", "danger"} else 0
@@ -242,43 +248,34 @@ class ModernSocietyApp(ctk.CTk):
         elif variant == "danger":
             border_color = "#FECDCA"
         return ctk.CTkButton(
-            parent, text=text, command=command, width=width, height=38,
-            corner_radius=9, fg_color=fg, hover_color=hover, text_color=text_color,
+            parent, text=text, command=command, width=width, height=34,
+            corner_radius=CONTROL_RADIUS, fg_color=fg, hover_color=hover, text_color=text_color,
             border_width=border_width, border_color=border_color,
             font=(FONT_MEDIUM, 9),
         )
 
-    def metric_card(
-        self, parent, title: str, value: str, icon: str, icon_fg: str,
-        icon_color: str, note: str,
-    ) -> ctk.CTkFrame:
+    def metric_card(self, parent, title: str, value: str, note: str) -> ctk.CTkFrame:
         card = ctk.CTkFrame(
-            parent, fg_color=SURFACE, corner_radius=14, border_width=1, border_color=BORDER,
+            parent, fg_color=SURFACE, corner_radius=PANEL_RADIUS,
+            border_width=1, border_color=SUBTLE_BORDER,
         )
-        card.grid_columnconfigure(0, weight=1)
-        top = ctk.CTkFrame(card, fg_color="transparent")
-        top.pack(fill="x", padx=17, pady=(16, 8))
-        ctk.CTkLabel(top, text=title, text_color=TEXT_SECONDARY,
-                     font=(FONT_MEDIUM, 9)).pack(side="left")
-        ctk.CTkLabel(
-            top, text=icon, width=34, height=34, corner_radius=10,
-            fg_color=icon_fg, text_color=icon_color, font=(FONT_MEDIUM, 14),
-        ).pack(side="right")
+        ctk.CTkLabel(card, text=title, text_color=TEXT_SECONDARY,
+                     font=(FONT, 9)).pack(anchor="w", padx=16, pady=(14, 7))
         ctk.CTkLabel(card, text=value, text_color=TEXT,
-                     font=(FONT_MEDIUM, 21)).pack(anchor="w", padx=17)
+                     font=(FONT_MEDIUM, 19)).pack(anchor="w", padx=16)
         ctk.CTkLabel(card, text=note, text_color=MUTED,
-                     font=(FONT, 8)).pack(anchor="w", padx=17, pady=(5, 16))
+                     font=(FONT, 8)).pack(anchor="w", padx=16, pady=(5, 14))
         return card
 
     def section_card(self, parent, title: str, subtitle: str = "") -> tuple[ctk.CTkFrame, ctk.CTkFrame]:
-        card = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=14,
-                            border_width=1, border_color=BORDER)
+        card = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=PANEL_RADIUS,
+                    border_width=1, border_color=SUBTLE_BORDER)
         header = ctk.CTkFrame(card, fg_color="transparent")
-        header.pack(fill="x", padx=18, pady=(16, 12))
+        header.pack(fill="x", padx=16, pady=(14, 10))
         labels = ctk.CTkFrame(header, fg_color="transparent")
         labels.pack(side="left")
         ctk.CTkLabel(labels, text=title, text_color=TEXT,
-                     font=(FONT_MEDIUM, 13)).pack(anchor="w")
+                     font=(FONT_MEDIUM, 12)).pack(anchor="w")
         if subtitle:
             ctk.CTkLabel(labels, text=subtitle, text_color=MUTED,
                          font=(FONT, 8)).pack(anchor="w", pady=(2, 0))
@@ -289,17 +286,17 @@ class ModernSocietyApp(ctk.CTk):
     def tree(
         self, parent, columns: list[tuple[str, str, int, str]], height: int = 10,
     ) -> ttk.Treeview:
-        holder = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=12,
-                              border_width=1, border_color=BORDER)
+        holder = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=PANEL_RADIUS,
+                      border_width=1, border_color=SUBTLE_BORDER)
         holder.pack(fill="both", expand=True)
         holder.grid_columnconfigure(0, weight=1)
         holder.grid_rowconfigure(0, weight=1)
         names = [column[0] for column in columns]
         tree = ttk.Treeview(holder, columns=names, show="headings", style=TREE_STYLE, height=height)
         ybar = ctk.CTkScrollbar(holder, orientation="vertical", command=tree.yview,
-                                button_color="#D0D5DD", button_hover_color=MUTED, width=12)
+                                button_color="#9CA3AF", button_hover_color=MUTED, width=11)
         xbar = ctk.CTkScrollbar(holder, orientation="horizontal", command=tree.xview,
-                                button_color="#D0D5DD", button_hover_color=MUTED, height=12)
+                                button_color="#9CA3AF", button_hover_color=MUTED, height=11)
         tree.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
         for name, label, width, anchor in columns:
             tree.heading(name, text=label)
@@ -307,8 +304,8 @@ class ModernSocietyApp(ctk.CTk):
         tree.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=(8, 0))
         ybar.grid(row=0, column=1, sticky="ns", padx=(4, 8), pady=8)
         xbar.grid(row=1, column=0, sticky="ew", padx=10, pady=(4, 8))
-        tree.tag_configure("paid", background=TEAL_SOFT, foreground="#027A48")
-        tree.tag_configure("overdue", background=RED_SOFT, foreground="#B42318")
+        tree.tag_configure("paid", background=SUCCESS_SOFT, foreground=SUCCESS)
+        tree.tag_configure("overdue", background=RED_SOFT, foreground=RED)
         tree.tag_configure("inactive", foreground=MUTED)
         return tree
 
@@ -319,19 +316,19 @@ class ModernSocietyApp(ctk.CTk):
             f"{MONTHS[stats['latest_month'] - 1]} {stats['latest_year']}"
             if stats["latest_month"] else "No period"
         )
-        header = self.page_header("Good day", "Here is the latest financial position of the society.")
-        self.button(header, "+ Record payment", lambda: self.navigate("dues", self.show_dues),
-                    "primary", 142).pack(side="right")
+        header = self.page_header("Overview", f"Financial position and collection status · {period}")
+        self.button(header, "Open monthly dues", lambda: self.navigate("dues", self.show_dues),
+                "primary", 142).pack(side="right")
 
         metrics = ctk.CTkFrame(self.content, fg_color="transparent")
         metrics.pack(fill="x")
         for index in range(4):
             metrics.grid_columnconfigure(index, weight=1, uniform="metric")
         cards = [
-            ("Active members", str(stats["active_members"]), "M", BLUE_SOFT, BLUE, "Current member register"),
-            ("Member savings", money(stats["contributions"]), "S", TEAL_SOFT, TEAL, "Total contributions received"),
-            ("Loans in circulation", money(stats["loan_outstanding"]), "₹", AMBER_SOFT, AMBER, "Outstanding member principal"),
-            ("Available funds", money(stats["available_funds"]), "A", PURPLE_SOFT, PRIMARY, "Corpus less active loans"),
+            ("Active members", str(stats["active_members"]), "Current member register"),
+            ("Member savings", money(stats["contributions"]), "Contributions received"),
+            ("Loans in circulation", money(stats["loan_outstanding"]), "Outstanding principal"),
+            ("Available funds", money(stats["available_funds"]), "Corpus less active loans"),
         ]
         for index, values in enumerate(cards):
             self.metric_card(metrics, *values).grid(
@@ -340,7 +337,7 @@ class ModernSocietyApp(ctk.CTk):
             )
 
         middle = ctk.CTkFrame(self.content, fg_color="transparent")
-        middle.pack(fill="x", pady=14)
+        middle.pack(fill="x", pady=12)
         middle.grid_columnconfigure(0, weight=2)
         middle.grid_columnconfigure(1, weight=1)
         progress_card, progress_body = self.section_card(
@@ -350,22 +347,22 @@ class ModernSocietyApp(ctk.CTk):
         total_due = stats["period_due"]
         ratio = min(1, stats["period_paid"] / total_due) if total_due else 0
         row = ctk.CTkFrame(progress_body, fg_color="transparent")
-        row.pack(fill="x", padx=8, pady=(4, 8))
+        row.pack(fill="x", padx=8, pady=(3, 7))
         ctk.CTkLabel(row, text=money(stats["period_paid"]), text_color=TEXT,
-                     font=(FONT_MEDIUM, 22)).pack(side="left")
+                 font=(FONT_MEDIUM, 19)).pack(side="left")
         ctk.CTkLabel(row, text=f"of {money(total_due)}", text_color=MUTED,
                      font=(FONT, 9)).pack(side="left", padx=7, pady=(7, 0))
         ctk.CTkLabel(row, text=f"{ratio * 100:.0f}%", text_color=PRIMARY,
                      font=(FONT_MEDIUM, 11)).pack(side="right")
-        bar = ctk.CTkProgressBar(progress_body, height=10, corner_radius=5,
-                                 progress_color=PRIMARY, fg_color="#EAECF0")
-        bar.pack(fill="x", padx=8, pady=(0, 16))
+        bar = ctk.CTkProgressBar(progress_body, height=6, corner_radius=0,
+                     progress_color=PRIMARY, fg_color="#E5E7EB")
+        bar.pack(fill="x", padx=8, pady=(0, 14))
         bar.set(ratio)
 
         quick_card, quick_body = self.section_card(middle, "Quick actions", "Common monthly tasks")
         quick_card.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
-        self.button(quick_body, "Add member", self.add_member_dialog, "secondary", 118).pack(side="left", padx=(8, 5), pady=8)
-        self.button(quick_body, "Issue loan", self.issue_loan_dialog, "secondary", 118).pack(side="left", padx=5, pady=8)
+        self.button(quick_body, "Add member", self.add_member_dialog, "secondary", 110).pack(side="left", padx=(8, 4), pady=8)
+        self.button(quick_body, ISSUE_LOAN_LABEL, self.issue_loan_dialog, "secondary", 110).pack(side="left", padx=4, pady=8)
 
         lower = ctk.CTkFrame(self.content, fg_color="transparent")
         lower.pack(fill="both", expand=True)
@@ -385,13 +382,15 @@ class ModernSocietyApp(ctk.CTk):
     def show_members(self) -> None:
         self.clear()
         header = self.page_header("Members", "Manage the member register, savings and account status.")
-        self.button(header, "+ Add member", self.add_member_dialog, "primary", 125).pack(side="right")
+        self.button(header, "Add member", self.add_member_dialog, "primary", 112).pack(side="right")
         controls = ctk.CTkFrame(self.content, fg_color="transparent")
         controls.pack(fill="x", pady=(0, 12))
         query = tk.StringVar()
+        ctk.CTkLabel(controls, text="Search", text_color=TEXT_SECONDARY,
+                 font=(FONT_MEDIUM, 9)).pack(side="left", padx=(0, 8))
         search = ctk.CTkEntry(
             controls, textvariable=query, placeholder_text="Search member or phone…",
-            width=300, height=40, corner_radius=9, border_color=BORDER,
+            width=300, height=36, corner_radius=CONTROL_RADIUS, border_color=BORDER,
             fg_color=SURFACE, text_color=TEXT,
         )
         search.pack(side="left")
@@ -474,14 +473,13 @@ class ModernSocietyApp(ctk.CTk):
     def show_loans(self) -> None:
         self.clear()
         header = self.page_header("Loans", "Track disbursements, reducing balances and repayment terms.")
-        self.button(header, "+ Issue loan", self.issue_loan_dialog, "primary", 125).pack(side="right")
+        self.button(header, ISSUE_LOAN_LABEL, self.issue_loan_dialog, "primary", 108).pack(side="right")
         summary = ctk.CTkFrame(self.content, fg_color="transparent")
         summary.pack(fill="x", pady=(0, 12))
         loans = self.db.list_loans()
         open_loans = [row for row in loans if row["status"] == "Open"]
-        ctk.CTkLabel(summary, text=f"{len(open_loans)} active loans", text_color="#027A48",
-                     fg_color=TEAL_SOFT, corner_radius=12, height=28,
-                     font=(FONT_MEDIUM, 9)).pack(side="left")
+        ctk.CTkLabel(summary, text=f"Active loans: {len(open_loans)}", text_color=TEXT_SECONDARY,
+                 font=(FONT_MEDIUM, 9)).pack(side="left")
         table = self.tree(self.content, [
             ("member", "MEMBER", 220, "w"), ("type", "TYPE", 90, "center"),
             ("date", "ISSUE DATE", 105, "center"), ("original", "ORIGINAL", 130, "e"),
@@ -508,14 +506,15 @@ class ModernSocietyApp(ctk.CTk):
         labels = ["Member", "Amount", "Issue date", "Loan type", "Monthly EMI", "Monthly interest %", "Notes"]
         for index, label in enumerate(labels):
             self.form_label(dialog.body, label, index)
-        member = ctk.CTkComboBox(dialog.body, values=list(member_map), height=38, corner_radius=8,
+        member = ctk.CTkComboBox(dialog.body, values=list(member_map), height=36, corner_radius=CONTROL_RADIUS,
                                  border_color=BORDER, fg_color=SURFACE, button_color=PRIMARY,
                                  button_hover_color=PRIMARY_HOVER)
         member.grid(row=0, column=1, sticky="ew", padx=(14, 4), pady=6)
         member.set(next(iter(member_map)))
         amount = self.form_entry(dialog.body, 1, "0"); amount.insert(0, "0")
         issue_date = self.form_entry(dialog.body, 2, "YYYY-MM-DD"); issue_date.insert(0, date.today().isoformat())
-        loan_type = ctk.CTkComboBox(dialog.body, values=["Fresh", "Top-up", "Emergency"], height=38,
+        loan_type = ctk.CTkComboBox(dialog.body, values=["Fresh", "Top-up", "Emergency"], height=36,
+                        corner_radius=CONTROL_RADIUS,
                                     border_color=BORDER, fg_color=SURFACE, button_color=PRIMARY,
                                     button_hover_color=PRIMARY_HOVER)
         loan_type.grid(row=3, column=1, sticky="ew", padx=(14, 4), pady=6); loan_type.set("Fresh")
@@ -534,7 +533,7 @@ class ModernSocietyApp(ctk.CTk):
                 self.navigate("loans", self.show_loans)
             except Exception as exc:
                 messagebox.showerror("Cannot issue loan", str(exc), parent=dialog)
-        self.modal_buttons(dialog, "Issue loan", save)
+        self.modal_buttons(dialog, ISSUE_LOAN_LABEL, save)
 
     def show_dues(self) -> None:
         self.clear()
@@ -542,12 +541,12 @@ class ModernSocietyApp(ctk.CTk):
         periods = self.db.list_periods()
         choices = {f"{MONTHS[row['month'] - 1]} {row['year']}  ·  {row['status']}": row["id"] for row in periods}
         selected = tk.StringVar(value=next(iter(choices), ""))
-        tools = ctk.CTkFrame(self.content, fg_color=SURFACE, corner_radius=12,
-                             border_width=1, border_color=BORDER)
+        tools = ctk.CTkFrame(self.content, fg_color=SURFACE, corner_radius=PANEL_RADIUS,
+                     border_width=1, border_color=SUBTLE_BORDER)
         tools.pack(fill="x", pady=(0, 12))
         period_combo = ctk.CTkComboBox(
-            tools, variable=selected, values=list(choices), width=225, height=38,
-            corner_radius=8, border_color=BORDER, fg_color=SURFACE,
+            tools, variable=selected, values=list(choices), width=225, height=34,
+            corner_radius=CONTROL_RADIUS, border_color=BORDER, fg_color=SURFACE,
             button_color=PRIMARY, button_hover_color=PRIMARY_HOVER,
         )
         period_combo.pack(side="left", padx=12, pady=11)
@@ -562,8 +561,11 @@ class ModernSocietyApp(ctk.CTk):
         actions = ctk.CTkFrame(self.content, fg_color="transparent")
         actions.pack(fill="x", pady=(0, 10))
         query = tk.StringVar()
+        ctk.CTkLabel(actions, text="Search", text_color=TEXT_SECONDARY,
+                 font=(FONT_MEDIUM, 9)).pack(side="left", padx=(0, 8))
         ctk.CTkEntry(actions, textvariable=query, placeholder_text="Search member…", width=260,
-                     height=38, corner_radius=9, border_color=BORDER, fg_color=SURFACE).pack(side="left")
+                     height=34, corner_radius=CONTROL_RADIUS, border_color=BORDER,
+                     fg_color=SURFACE).pack(side="left")
         table = self.tree(self.content, [
             ("no", "NO.", 55, "center"), ("member", "MEMBER", 205, "w"),
             ("saving", "CONTRIBUTION", 110, "e"), ("emi", "EMI", 95, "e"),
@@ -573,7 +575,7 @@ class ModernSocietyApp(ctk.CTk):
             ("status", "STATUS", 90, "center"),
         ], height=13)
         self.button(actions, "Record payment", lambda: self.payment_dialog(table),
-                    "success", 130).pack(side="right")
+                    "primary", 130).pack(side="right")
         self.button(actions, "Member bill", lambda: self.member_bill(table),
                     "secondary", 110).pack(side="right", padx=8)
 
@@ -633,7 +635,8 @@ class ModernSocietyApp(ctk.CTk):
             "late_fee": due["late_fee_paise"] - due["late_fee_paid_paise"],
         }
         dialog = Modal(self, f"Payment · {due['name']}", 610, 720)
-        banner = ctk.CTkFrame(dialog.body, fg_color=PURPLE_SOFT, corner_radius=10)
+        banner = ctk.CTkFrame(dialog.body, fg_color=BLUE_SOFT, corner_radius=PANEL_RADIUS,
+                      border_width=1, border_color="#BFDBFE")
         banner.grid(row=0, column=0, columnspan=2, sticky="ew", padx=4, pady=(0, 12))
         ctk.CTkLabel(banner, text=f"{MONTHS[due['month'] - 1]} {due['year']}", text_color=PRIMARY,
                      font=(FONT_MEDIUM, 10)).pack(side="left", padx=14, pady=12)
@@ -653,7 +656,8 @@ class ModernSocietyApp(ctk.CTk):
         payment_date = self.form_entry(dialog.body, 6, "YYYY-MM-DD"); payment_date.insert(0, date.today().isoformat())
         self.form_label(dialog.body, "Payment method", 7)
         method = ctk.CTkComboBox(dialog.body, values=["Cash", "Bank Transfer", "UPI", "Cheque"],
-                                 height=38, border_color=BORDER, fg_color=SURFACE,
+                                 height=36, corner_radius=CONTROL_RADIUS,
+                                 border_color=BORDER, fg_color=SURFACE,
                                  button_color=PRIMARY, button_hover_color=PRIMARY_HOVER)
         method.grid(row=7, column=1, sticky="ew", padx=(14, 4), pady=6); method.set("Cash")
         self.form_label(dialog.body, "Reference / UTR", 8)
@@ -678,7 +682,7 @@ class ModernSocietyApp(ctk.CTk):
                     open_file(receipt)
             except Exception as exc:
                 messagebox.showerror("Cannot record payment", str(exc), parent=dialog)
-        self.modal_buttons(dialog, "Save & create receipt", save, 170, "success")
+        self.modal_buttons(dialog, "Save & create receipt", save, 170, "primary")
 
     def member_bill(self, table: ttk.Treeview) -> None:
         selection = table.selection()
@@ -720,12 +724,12 @@ class ModernSocietyApp(ctk.CTk):
     def show_cashbook(self) -> None:
         self.clear()
         header = self.page_header("Cashbook", "Review money movement, disbursements and society expenses.")
-        self.button(header, "+ Add expense", self.expense_dialog, "primary", 125).pack(side="right")
+        self.button(header, "Add expense", self.expense_dialog, "primary", 112).pack(side="right")
         tabs = ctk.CTkTabview(
-            self.content, fg_color=SURFACE, segmented_button_fg_color="#F2F4F7",
+            self.content, fg_color=SURFACE, segmented_button_fg_color="#F3F4F6",
             segmented_button_selected_color=PRIMARY, segmented_button_selected_hover_color=PRIMARY_HOVER,
-            segmented_button_unselected_color="#F2F4F7", segmented_button_unselected_hover_color=BORDER,
-            text_color=TEXT, corner_radius=14, border_width=1, border_color=BORDER,
+            segmented_button_unselected_color="#F3F4F6", segmented_button_unselected_hover_color=BORDER,
+            text_color=TEXT, corner_radius=PANEL_RADIUS, border_width=1, border_color=SUBTLE_BORDER,
         )
         tabs.pack(fill="both", expand=True)
         transactions_tab = tabs.add("Transactions")
@@ -780,17 +784,22 @@ class ModernSocietyApp(ctk.CTk):
         grid = ctk.CTkFrame(self.content, fg_color="transparent")
         grid.pack(fill="both", expand=True)
         grid.grid_columnconfigure((0, 1), weight=1, uniform="report")
-        report_card = self.feature_card(grid, "▤", BLUE_SOFT, BLUE, "Monthly reports",
-                                        "Create due-list PDFs and spreadsheet-compatible CSV exports.")
+        report_card = self.feature_card(
+            grid, "Monthly reports",
+            "Create due-list PDFs and spreadsheet-compatible CSV exports.",
+        )
         report_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        backup_card = self.feature_card(grid, "↻", TEAL_SOFT, TEAL, "Database protection",
-                                        "Create a complete backup before major changes or every month.")
+        backup_card = self.feature_card(
+            grid, "Database protection",
+            "Create a complete backup before major changes or every month.",
+        )
         backup_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         periods = self.db.list_periods()
         choices = {f"{MONTHS[row['month'] - 1]} {row['year']}": row["id"] for row in periods}
         selected = tk.StringVar(value=next(iter(choices), ""))
         combo = ctk.CTkComboBox(report_card, variable=selected, values=list(choices), width=260,
-                                height=40, border_color=BORDER, fg_color=SURFACE,
+                                height=36, corner_radius=CONTROL_RADIUS,
+                                border_color=BORDER, fg_color=SURFACE,
                                 button_color=PRIMARY, button_hover_color=PRIMARY_HOVER)
         combo.pack(anchor="w", padx=22, pady=(18, 8))
         self.button(report_card, "Create PDF", lambda: self.make_due_report(choices.get(selected.get())),
@@ -800,7 +809,7 @@ class ModernSocietyApp(ctk.CTk):
         self.button(report_card, "Open reports folder", lambda: os.startfile(self.db.reports_dir),
                     "secondary", 150).pack(anchor="w", padx=22, pady=(18, 22))  # type: ignore[attr-defined]
         self.button(backup_card, "Create backup now", self.create_backup,
-                    "success", 150).pack(anchor="w", padx=22, pady=(18, 5))
+                    "primary", 150).pack(anchor="w", padx=22, pady=(18, 5))
         self.button(backup_card, "Restore backup", self.restore_backup,
                     "secondary", 150).pack(anchor="w", padx=22, pady=5)
         self.button(backup_card, "Open backup folder", lambda: os.startfile(self.db.backups_dir),
@@ -808,15 +817,11 @@ class ModernSocietyApp(ctk.CTk):
         ctk.CTkLabel(backup_card, text=f"Local database\n{self.db.path}", text_color=MUTED,
                      justify="left", wraplength=430, font=(FONT, 8)).pack(anchor="w", padx=22, pady=(8, 22))
 
-    def feature_card(self, parent, icon: str, icon_bg: str, icon_color: str,
-                     title: str, subtitle: str) -> ctk.CTkFrame:
-        card = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=14,
-                            border_width=1, border_color=BORDER)
-        ctk.CTkLabel(card, text=icon, width=44, height=44, corner_radius=12,
-                     fg_color=icon_bg, text_color=icon_color,
-                     font=(FONT_MEDIUM, 18)).pack(anchor="w", padx=22, pady=(22, 12))
+    def feature_card(self, parent, title: str, subtitle: str) -> ctk.CTkFrame:
+        card = ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=PANEL_RADIUS,
+                            border_width=1, border_color=SUBTLE_BORDER)
         ctk.CTkLabel(card, text=title, text_color=TEXT,
-                     font=(FONT_MEDIUM, 17)).pack(anchor="w", padx=22)
+                     font=(FONT_MEDIUM, 15)).pack(anchor="w", padx=22, pady=(22, 0))
         ctk.CTkLabel(card, text=subtitle, text_color=TEXT_SECONDARY, wraplength=430,
                      justify="left", font=(FONT, 9)).pack(anchor="w", padx=22, pady=(5, 0))
         return card
@@ -850,8 +855,8 @@ class ModernSocietyApp(ctk.CTk):
     def show_settings(self) -> None:
         self.clear()
         self.page_header("Settings", "Configure identity and defaults used for future records.")
-        card = ctk.CTkFrame(self.content, fg_color=SURFACE, corner_radius=14,
-                            border_width=1, border_color=BORDER)
+        card = ctk.CTkFrame(self.content, fg_color=SURFACE, corner_radius=PANEL_RADIUS,
+                    border_width=1, border_color=SUBTLE_BORDER)
         card.pack(fill="x")
         title = ctk.CTkFrame(card, fg_color="transparent")
         title.pack(fill="x", padx=22, pady=(20, 10))
@@ -896,7 +901,7 @@ class ModernSocietyApp(ctk.CTk):
 
     def form_entry(self, parent, row: int, placeholder: str) -> ctk.CTkEntry:
         entry = ctk.CTkEntry(
-            parent, placeholder_text=placeholder, height=38, corner_radius=8,
+            parent, placeholder_text=placeholder, height=36, corner_radius=CONTROL_RADIUS,
             border_color=BORDER, fg_color=SURFACE, text_color=TEXT,
         )
         entry.grid(row=row, column=1, sticky="ew", padx=(14, 4), pady=6)
