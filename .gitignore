@@ -2,7 +2,8 @@ __pycache__/
 *.py[cod]
 .venv/
 build/
-dist/
+dist/*
+!dist/Utthan-Society-Manager.exe
 *.spec
 .pytest_cache/
 coverage.xml
