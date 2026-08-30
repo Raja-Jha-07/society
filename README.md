@@ -2,6 +2,8 @@
 
 Offline Windows software for member savings, internal loans, monthly dues, receipts and local record keeping.
 
+![Utthan Society Manager dashboard](docs/ui-preview.png)
+
 ## Ready-to-use application
 
 Open `dist/Utthan-Society-Manager.exe`. No Python installation is required on the computer that runs the EXE.
@@ -23,6 +25,7 @@ On first launch, the application creates its database and imports the 60 members
 - local backup and restore;
 - audit log in the database;
 - configurable contribution, EMI and interest defaults.
+- modern dashboard with rounded cards, collection progress and streamlined navigation.
 
 ## Data location
 

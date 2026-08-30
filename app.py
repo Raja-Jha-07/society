@@ -3,8 +3,8 @@ import tempfile
 from pathlib import Path
 
 from src.utthan.database import Database
+from src.utthan.modern_ui import run
 from src.utthan.reports import generate_due_list
-from src.utthan.ui import run
 
 
 def smoke_test() -> None:
