@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block title %}Request unavailable | Utthan{% endblock %}{% block content %}<section class="panel"><h1>{{ error.code }} — Request unavailable</h1><p class="muted">{{ error.description }}</p><a class="button" href="{{ url_for('index') }}">Return home</a></section>{% endblock %}

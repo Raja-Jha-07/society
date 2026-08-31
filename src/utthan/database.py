@@ -4,7 +4,8 @@ import os
 import shutil
 import sqlite3
 from contextlib import closing, contextmanager
-from datetime import date, datetime
+from contextvars import ContextVar, Token
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -18,6 +19,17 @@ from .seed import (
     OPENING_PERIOD,
     PREVIOUS_INTEREST,
 )
+
+
+_AUDIT_ACTOR: ContextVar[int | None] = ContextVar("utthan_audit_actor", default=None)
+
+
+def set_audit_actor(user_id: int | None) -> Token:
+    return _AUDIT_ACTOR.set(user_id)
+
+
+def reset_audit_actor(token: Token) -> None:
+    _AUDIT_ACTOR.reset(token)
 
 
 def to_paise(value: float | int | str) -> int:
@@ -56,6 +68,19 @@ CREATE TABLE IF NOT EXISTS members (
     opening_contribution_paise INTEGER NOT NULL DEFAULT 0,
     notes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('admin', 'member')),
+    member_id INTEGER UNIQUE REFERENCES members(id),
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+    must_change_password INTEGER NOT NULL DEFAULT 1 CHECK(must_change_password IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login_at TEXT,
+    CHECK((role = 'member' AND member_id IS NOT NULL) OR role = 'admin')
 );
 
 CREATE TABLE IF NOT EXISTS loans (
@@ -139,12 +164,31 @@ CREATE TABLE IF NOT EXISTS audit_log (
     action TEXT NOT NULL,
     entity_type TEXT NOT NULL,
     entity_id INTEGER,
-    details TEXT NOT NULL DEFAULT ''
+    details TEXT NOT NULL DEFAULT '',
+    actor_user_id INTEGER REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS auth_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_time TEXT NOT NULL,
+    username TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    ip_address TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS login_state (
+    identifier TEXT PRIMARY KEY,
+    failed_attempts INTEGER NOT NULL DEFAULT 0,
+    first_failed_at TEXT NOT NULL,
+    locked_until TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_loans_member ON loans(member_id);
 CREATE INDEX IF NOT EXISTS idx_dues_period ON dues(period_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_member ON transactions(member_id);
+CREATE INDEX IF NOT EXISTS idx_users_member ON users(member_id);
+CREATE INDEX IF NOT EXISTS idx_auth_events_username ON auth_events(username, event_time);
 """
 
 
@@ -164,6 +208,7 @@ class Database:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
         try:
             yield connection
             connection.commit()
@@ -175,7 +220,13 @@ class Database:
 
     def initialize(self) -> None:
         with self.connect() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(SCHEMA)
+            audit_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(audit_log)")
+            }
+            if "actor_user_id" not in audit_columns:
+                connection.execute("ALTER TABLE audit_log ADD COLUMN actor_user_id INTEGER")
             count = connection.execute("SELECT COUNT(*) FROM members").fetchone()[0]
             if count == 0:
                 self._seed_opening_balances(connection)
@@ -272,9 +323,194 @@ class Database:
         details: str,
     ) -> None:
         connection.execute(
-            "INSERT INTO audit_log(action, entity_type, entity_id, details) VALUES(?, ?, ?, ?)",
-            (action, entity_type, entity_id, details),
+            """INSERT INTO audit_log(action, entity_type, entity_id, details, actor_user_id)
+               VALUES(?, ?, ?, ?, ?)""",
+            (action, entity_type, entity_id, details, _AUDIT_ACTOR.get()),
         )
+
+    def account_count(self) -> int:
+        with self.connect() as connection:
+            return int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+
+    def user(self, user_id: int) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT u.*, m.member_no, m.name AS member_name
+                   FROM users u LEFT JOIN members m ON m.id = u.member_id
+                   WHERE u.id = ?""",
+                (user_id,),
+            ).fetchone()
+
+    def user_by_username(self, username: str) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT u.*, m.member_no, m.name AS member_name
+                   FROM users u LEFT JOIN members m ON m.id = u.member_id
+                   WHERE u.username = ? COLLATE NOCASE""",
+                (username.strip(),),
+            ).fetchone()
+
+    def user_for_member(self, member_id: int) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT u.*, m.member_no, m.name AS member_name
+                   FROM users u JOIN members m ON m.id = u.member_id
+                   WHERE u.member_id = ?""",
+                (member_id,),
+            ).fetchone()
+
+    def list_users(self) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT u.*, m.member_no, m.name AS member_name
+                   FROM users u LEFT JOIN members m ON m.id = u.member_id
+                   ORDER BY CASE u.role WHEN 'admin' THEN 0 ELSE 1 END, u.username"""
+            ).fetchall()
+
+    def create_user(
+        self,
+        username: str,
+        password_hash: str,
+        role: str,
+        member_id: int | None = None,
+        must_change_password: bool = True,
+    ) -> int:
+        username = username.strip().lower()
+        if not username or not password_hash:
+            raise ValueError("Username and password are required")
+        if role not in {"admin", "member"}:
+            raise ValueError("Invalid account role")
+        if role == "member" and member_id is None:
+            raise ValueError("A member account must be linked to a member")
+        if role == "admin":
+            member_id = None
+        with self.connect() as connection:
+            try:
+                cursor = connection.execute(
+                    """INSERT INTO users(username, password_hash, role, member_id,
+                       must_change_password) VALUES(?, ?, ?, ?, ?)""",
+                    (username, password_hash, role, member_id, int(must_change_password)),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("Username or linked member already has an account") from exc
+            self._audit(connection, "CREATE", "user", cursor.lastrowid, username)
+            return int(cursor.lastrowid)
+
+    def update_user_password(
+        self, user_id: int, password_hash: str, must_change_password: bool = False
+    ) -> None:
+        if not password_hash:
+            raise ValueError("Password is required")
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """UPDATE users SET password_hash = ?, must_change_password = ?
+                   WHERE id = ?""",
+                (password_hash, int(must_change_password), user_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("User account not found")
+            self._audit(connection, "PASSWORD", "user", user_id, "Password changed")
+
+    def update_user_active(self, user_id: int, is_active: bool) -> None:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE users SET is_active = ? WHERE id = ?",
+                (int(is_active), user_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("User account not found")
+            self._audit(
+                connection,
+                "UPDATE",
+                "user",
+                user_id,
+                "Activated" if is_active else "Deactivated",
+            )
+
+    def active_admin_count(self) -> int:
+        with self.connect() as connection:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1"
+                ).fetchone()[0]
+            )
+
+    def members_without_users(self) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT m.id, m.member_no, m.name FROM members m
+                   LEFT JOIN users u ON u.member_id = m.id
+                   WHERE u.id IS NULL AND m.status = 'Active' ORDER BY m.member_no"""
+            ).fetchall()
+
+    def record_auth_event(
+        self, username: str, event_type: str, ip_address: str, user_agent: str
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO auth_events(event_time, username, event_type, ip_address, user_agent)
+                   VALUES(?, ?, ?, ?, ?)""",
+                (
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    username.strip().lower(),
+                    event_type,
+                    ip_address[:100],
+                    user_agent[:300],
+                ),
+            )
+
+    def login_lock_seconds(self, identifier: str) -> int:
+        now = datetime.now(timezone.utc)
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT locked_until FROM login_state WHERE identifier = ?", (identifier,)
+            ).fetchone()
+        if not row or not row["locked_until"]:
+            return 0
+        try:
+            locked_until = datetime.fromisoformat(row["locked_until"])
+        except ValueError:
+            return 0
+        return max(0, int((locked_until - now).total_seconds()))
+
+    def record_login_failure(self, identifier: str) -> None:
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(minutes=15)
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM login_state WHERE identifier = ?", (identifier,)
+            ).fetchone()
+            if not row or datetime.fromisoformat(row["first_failed_at"]) < window_start:
+                connection.execute(
+                    """INSERT INTO login_state(identifier, failed_attempts, first_failed_at, locked_until)
+                       VALUES(?, 1, ?, NULL)
+                       ON CONFLICT(identifier) DO UPDATE SET failed_attempts = 1,
+                       first_failed_at = excluded.first_failed_at, locked_until = NULL""",
+                    (identifier, now.isoformat(timespec="seconds")),
+                )
+                return
+            attempts = int(row["failed_attempts"]) + 1
+            locked_until = (
+                (now + timedelta(minutes=15)).isoformat(timespec="seconds")
+                if attempts >= 5
+                else None
+            )
+            connection.execute(
+                """UPDATE login_state SET failed_attempts = ?, locked_until = ?
+                   WHERE identifier = ?""",
+                (attempts, locked_until, identifier),
+            )
+
+    def clear_login_failures(self, identifier: str) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM login_state WHERE identifier = ?", (identifier,))
+
+    def touch_user_login(self, user_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE users SET last_login_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(timespec="seconds"), user_id),
+            )
 
     def setting(self, key: str, default: str = "") -> str:
         with self.connect() as connection:
@@ -511,6 +747,49 @@ class Database:
                 (due_id,),
             ).fetchone()
 
+    def member_dues(self, member_id: int) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT d.*, p.year, p.month, p.status AS period_status,
+                    (d.contribution_due_paise + d.emi_due_paise + d.interest_due_paise +
+                     d.arrears_due_paise + d.late_fee_paise) AS total_due_paise,
+                    (d.contribution_paid_paise + d.principal_paid_paise + d.interest_paid_paise +
+                     d.arrears_paid_paise + d.late_fee_paid_paise) AS total_paid_paise
+                    FROM dues d JOIN periods p ON p.id = d.period_id
+                    WHERE d.member_id = ? ORDER BY p.year DESC, p.month DESC""",
+                (member_id,),
+            ).fetchall()
+
+    def member_loans(self, member_id: int) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT * FROM loans WHERE member_id = ?
+                   ORDER BY CASE status WHEN 'Open' THEN 0 ELSE 1 END, issue_date DESC""",
+                (member_id,),
+            ).fetchall()
+
+    def member_transactions(
+        self, member_id: int, limit: int | None = None
+    ) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            if limit is None:
+                return connection.execute(
+                    """SELECT * FROM transactions WHERE member_id = ?
+                       ORDER BY transaction_date DESC, id DESC""",
+                    (member_id,),
+                ).fetchall()
+            return connection.execute(
+                """SELECT * FROM transactions WHERE member_id = ?
+                   ORDER BY transaction_date DESC, id DESC LIMIT ?""",
+                (member_id, limit),
+            ).fetchall()
+
+    def transaction(self, transaction_id: int) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT * FROM transactions WHERE id = ?", (transaction_id,)
+            ).fetchone()
+
     def record_payment(
         self,
         due_id: int,
@@ -681,6 +960,23 @@ class Database:
                 (limit,),
             ).fetchall()
 
+    def audit_entries(self, limit: int = 500) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT a.*, u.username AS actor_username FROM audit_log a
+                   LEFT JOIN users u ON u.id = a.actor_user_id
+                   ORDER BY a.event_time DESC, a.id DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+
+    def auth_event_entries(self, limit: int = 500) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return connection.execute(
+                """SELECT * FROM auth_events
+                   ORDER BY event_time DESC, id DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+
     def close_period(self, period_id: int) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -695,6 +991,42 @@ class Database:
         with closing(sqlite3.connect(self.path)) as source, closing(sqlite3.connect(target)) as destination:
             source.backup(destination)
         return target
+
+    @staticmethod
+    def validate_web_backup(source: Path) -> None:
+        required_tables = {
+            "settings",
+            "members",
+            "users",
+            "loans",
+            "periods",
+            "dues",
+            "transactions",
+            "expenses",
+            "audit_log",
+            "auth_events",
+        }
+        try:
+            with closing(sqlite3.connect(source)) as connection:
+                connection.execute("PRAGMA query_only = ON")
+                integrity = connection.execute("PRAGMA quick_check").fetchone()
+                if not integrity or integrity[0] != "ok":
+                    raise ValueError("The uploaded database failed its integrity check")
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                if not required_tables.issubset(tables):
+                    raise ValueError("Only backups downloaded from this web portal can be restored")
+                admins = connection.execute(
+                    "SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1"
+                ).fetchone()[0]
+                if admins < 1:
+                    raise ValueError("The backup does not contain an active administrator")
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("The uploaded file is not a valid SQLite backup") from exc
 
     def restore(self, source: Path) -> None:
         if not source.exists():

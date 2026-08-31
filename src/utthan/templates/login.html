@@ -1,0 +1,4 @@
+{% extends 'base.html' %}{% block title %}Sign in | Utthan{% endblock %}{% block content %}
+<section class="auth-card"><div class="auth-logo">UTTHAN SOCIETY</div><h1>Welcome back</h1><p class="subtitle">Sign in to view your private society records.</p>
+<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div class="field"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required autofocus></div><div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div><button class="button" type="submit">Sign in securely</button></form>
+<p class="note">Accounts are issued by the society administrator. Contact the administrator if access is unavailable.</p></section>{% endblock %}
