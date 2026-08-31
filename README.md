@@ -2,9 +2,7 @@
 
 Offline Windows software for member savings, internal loans, monthly dues, receipts and local record keeping.
 
-![Utthan Society Manager dashboard](docs/ui-preview.png)
-
-![Monthly dues workspace](docs/ui-dues-preview.png)
+![Classic Windows interface with high-DPI rendering](docs/classic-hd-preview.png)
 
 ## Ready-to-use application
 
@@ -27,7 +25,6 @@ On first launch, the application creates its database and imports the 60 members
 - local backup and restore;
 - audit log in the database;
 - configurable contribution, EMI and interest defaults.
-- restrained, data-first desktop interface with collection progress and compact navigation.
 
 ## Data location
 

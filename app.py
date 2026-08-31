@@ -1,10 +1,29 @@
+import ctypes
 import sys
 import tempfile
 from pathlib import Path
 
+
+def enable_high_dpi() -> None:
+    """Request native Windows rendering before Tk initializes."""
+    if sys.platform != "win32":
+        return
+    try:
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 (Windows 10+).
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except (AttributeError, OSError):
+        try:
+            # PROCESS_PER_MONITOR_DPI_AWARE (Windows 8.1).
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except (AttributeError, OSError):
+            ctypes.windll.user32.SetProcessDPIAware()
+
+
+enable_high_dpi()
+
 from src.utthan.database import Database
-from src.utthan.modern_ui import run
 from src.utthan.reports import generate_due_list
+from src.utthan.ui import run
 
 
 def smoke_test() -> None:
