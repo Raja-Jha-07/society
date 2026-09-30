@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Utthan Portal{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='web.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='member-details.css') }}">
+</head>
+<body class="{% if not current_user %}auth-page{% endif %}">
+  {% if current_user %}
+  <aside class="sidebar">
+    <a class="brand" href="{{ url_for('index') }}"><strong>UTTHAN</strong><span>Private Society Portal</span></a>
+    <nav>
+      {% if current_user.role == 'admin' %}
+      <a href="{{ url_for('admin_dashboard') }}">Overview</a>
+      <a href="{{ url_for('dues') }}">Monthly dues</a>
+      <a href="{{ url_for('members') }}">Members</a>
+      <a href="{{ url_for('users') }}">User accounts</a>
+      <a href="{{ url_for('loans') }}">Loans</a>
+      <a href="{{ url_for('cashbook') }}">Cashbook</a>
+      <a href="{{ url_for('activity') }}">Activity &amp; security</a>
+      <a href="{{ url_for('settings') }}">Settings</a>
+      {% else %}
+      <a href="{{ url_for('portal') }}">My records</a>
+      {% endif %}
+      <a href="{{ url_for('change_password') }}">Change password</a>
+    </nav>
+    <div class="user-box">
+      <span>Signed in as</span>
+      <strong>{{ current_user.member_name or current_user.username }}</strong>
+      <small>{{ current_user.role|title }}</small>
+      <form method="post" action="{{ url_for('logout') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="link-button" type="submit">Sign out</button>
+      </form>
+    </div>
+  </aside>
+  {% endif %}
+  <main class="{% if current_user %}app-main{% else %}auth-main{% endif %}">
+    {% if current_user %}
+    <header class="topbar"><span>{{ society_name }}</span><span class="private-pill">Private &amp; secure</span></header>
+    {% endif %}
+    <div class="content {% if not current_user %}auth-content{% endif %}">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}<div class="alert {{ category }}">{{ message }}</div>{% endfor %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</body>
+</html>
