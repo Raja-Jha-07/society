@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import calendar
 import os
+import sqlite3
 import tkinter as tk
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -11,6 +12,7 @@ from .database import Database, from_paise
 from .reports import (
     MONTHS,
     export_period_csv,
+    generate_all_bills,
     generate_due_list,
     generate_member_bill,
     generate_receipt,
@@ -79,6 +81,7 @@ class SocietyApp(tk.Tk):
         monitor_dpi = self.winfo_fpixels("1i")
         self.tk.call("tk", "scaling", monitor_dpi / 72.0)
         self.db = db or Database()
+        self.auto_backup_status = self._run_auto_backup()
         self.title("Utthan Society Manager")
         self.geometry("1320x820")
         self.minsize(1080, 680)
@@ -86,6 +89,17 @@ class SocietyApp(tk.Tk):
         self._configure_styles()
         self._build_shell()
         self.show_dashboard()
+
+    def _run_auto_backup(self) -> str:
+        try:
+            self.db.auto_backup()
+            latest = self.db.latest_auto_backup()
+        except (OSError, sqlite3.Error):
+            return "Automatic backup failed - use Create Backup Now"
+        if not latest:
+            return ""
+        stamp = datetime.fromtimestamp(latest.stat().st_mtime)
+        return f"Last automatic backup: {stamp:%d %b %Y, %I:%M %p}"
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self)
@@ -172,6 +186,8 @@ class SocietyApp(tk.Tk):
         status.pack(fill="x", side="bottom")
         tk.Label(status, text=f"Data: {self.db.path}", bg=WHITE, fg=MUTED,
                  font=(FONT_REGULAR, 8)).pack(side="left", padx=12, pady=5)
+        tk.Label(status, text=self.auto_backup_status, bg=WHITE, fg=MUTED,
+                 font=(FONT_REGULAR, 8)).pack(side="right", padx=12, pady=5)
 
     def clear(self) -> None:
         for child in self.content.winfo_children():
@@ -438,6 +454,8 @@ class SocietyApp(tk.Tk):
                    command=lambda: self.payment_dialog(tree)).pack(side="left")
         ttk.Button(actions, text="Generate Member Bill", style=SECONDARY_BUTTON,
                    command=lambda: self.member_bill(tree)).pack(side="left", padx=8)
+        ttk.Button(actions, text="All Unpaid Bills PDF", style=SECONDARY_BUTTON,
+                   command=lambda: self.make_all_bills(choices.get(selected.get()))).pack(side="left")
         search_var = tk.StringVar()
         ttk.Label(actions, text="Search:").pack(side="left", padx=(20, 4))
         ttk.Entry(actions, textvariable=search_var, width=24).pack(side="left")
@@ -529,6 +547,19 @@ class SocietyApp(tk.Tk):
                 widget = ttk.Entry(body, textvariable=values[key])
             widget.grid(row=index, column=1, sticky="ew", padx=(12, 0), pady=5)
         body.columnconfigure(1, weight=1)
+        total_label = ttk.Label(dialog.buttons, style=CARD_LABEL, font=(FONT_SEMIBOLD, 10))
+        total_label.pack(side="left")
+
+        def update_total(*_: object) -> None:
+            try:
+                amount = sum(parse_amount(values[key].get(), label) for key, label in labels[:5])
+            except ValueError as exc:
+                total_label.configure(text=str(exc), foreground=DANGER)
+                return
+            total_label.configure(text=f"Paying now: {money(round(amount * 100))}", foreground=TEXT)
+        for key, _ in labels[:5]:
+            values[key].trace_add("write", update_total)
+        update_total()
 
         def save() -> None:
             try:
@@ -566,6 +597,15 @@ class SocietyApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Cannot create report", str(exc), parent=self)
 
+    def make_all_bills(self, period_id: int | None) -> None:
+        if not period_id:
+            return
+        try:
+            path = generate_all_bills(self.db, period_id)
+            open_file(path)
+        except Exception as exc:
+            messagebox.showerror("Cannot create bills", str(exc), parent=self)
+
     def make_csv(self, period_id: int | None) -> None:
         if not period_id:
             return
@@ -578,7 +618,12 @@ class SocietyApp(tk.Tk):
     def close_selected_period(self, period_id: int | None) -> None:
         if not period_id:
             return
-        if messagebox.askyesno("Close period", "Close this period? Closed periods cannot accept more payments.", icon="warning", parent=self):
+        if messagebox.askyesno("Close period", "Close this period? Closed periods cannot accept more payments.\n\nA safety backup is created automatically first.", icon="warning", parent=self):
+            try:
+                self.db.backup()
+            except (OSError, sqlite3.Error) as exc:
+                if not messagebox.askyesno("Backup failed", f"Safety backup failed:\n{exc}\n\nClose the period anyway?", icon="warning", parent=self):
+                    return
             self.db.close_period(period_id)
             self.show_dues()
 
@@ -586,6 +631,8 @@ class SocietyApp(tk.Tk):
         self.clear()
         header = self.heading("Cashbook", "Member receipts, loan disbursements and society expenses")
         ttk.Button(header, text="+ Add Expense", style=PRIMARY_BUTTON, command=self.expense_dialog).pack(side="right", anchor="e")
+        ttk.Button(header, text="Reprint Receipt", style=SECONDARY_BUTTON,
+                   command=lambda: self.reprint_receipt(tree)).pack(side="right", anchor="e", padx=8)
         notebook = ttk.Notebook(self.content)
         notebook.pack(fill="both", expand=True)
         transactions_page = ttk.Frame(notebook, style=CARD_FRAME, padding=8)
@@ -599,14 +646,25 @@ class SocietyApp(tk.Tk):
             ("notes", "Notes", 260, "w"),
         ])
         for row in self.db.transactions():
-            tree.insert("", "end", values=(row["transaction_date"], row["transaction_type"], row["name"] or "Society",
+            tree.insert("", "end", iid=str(row["id"]), values=(row["transaction_date"], row["transaction_type"], row["name"] or "Society",
                         row["payment_method"], money(row["amount_paise"]), row["reference"], row["notes"]))
+        tree.bind("<Double-1>", lambda _: self.reprint_receipt(tree))
         expenses = self.tree(expenses_page, [
             ("date", "Date", 120, "center"), ("category", "Category", 220, "w"),
             ("amount", "Amount", 150, "e"), ("notes", "Notes", 500, "w"),
         ])
         for row in self.db.list_expenses():
             expenses.insert("", "end", values=(row["expense_date"], row["category"], money(row["amount_paise"]), row["notes"]))
+
+    def reprint_receipt(self, tree: ttk.Treeview) -> None:
+        selection = tree.selection()
+        if not selection:
+            messagebox.showinfo("Select payment", "Select a member payment in Transactions first.", parent=self)
+            return
+        try:
+            open_file(generate_receipt(self.db, int(selection[0])))
+        except Exception as exc:
+            messagebox.showerror("Cannot create receipt", str(exc), parent=self)
 
     def expense_dialog(self) -> None:
         dialog = self.form_dialog("Add Expense", 500, 390)
@@ -653,7 +711,8 @@ class SocietyApp(tk.Tk):
         ttk.Button(report_card, text="Open Reports Folder", style=SECONDARY_BUTTON,
                    command=lambda: os.startfile(self.db.reports_dir)).pack(anchor="w", pady=(24, 0))  # type: ignore[attr-defined]
         ttk.Label(backup_card, text="Local database backup", style=CARD_VALUE).pack(anchor="w")
-        ttk.Label(backup_card, text="Create regular backups and keep a copy on another drive.", style=CARD_CAPTION).pack(anchor="w", pady=(4, 16))
+        ttk.Label(backup_card, text="Create regular backups and keep a copy on another drive.", style=CARD_CAPTION).pack(anchor="w", pady=(4, 2))
+        ttk.Label(backup_card, text="An automatic backup is also made once a day (last 30 kept in Backups\\Automatic).", style=CARD_CAPTION).pack(anchor="w", pady=(0, 16))
         ttk.Button(backup_card, text="Create Backup Now", style=ACCENT_BUTTON, command=self.create_backup).pack(anchor="w")
         ttk.Button(backup_card, text="Restore From Backup", style=SECONDARY_BUTTON, command=self.restore_backup).pack(anchor="w", pady=8)
         ttk.Button(backup_card, text="Open Backup Folder", style=SECONDARY_BUTTON,
@@ -723,6 +782,10 @@ class SocietyApp(tk.Tk):
                   text="Existing monthly dues keep the rate and amounts used when they were generated. Changing defaults does not rewrite historical records. Each loan also keeps its own interest rate and EMI.").pack(anchor="w", pady=(5, 0))
 
     def form_dialog(self, title: str, width: int, height: int):
+        # Sizes are designed for 100% Windows scaling; grow them on high-DPI displays so buttons stay visible.
+        scale = max(1.0, self.winfo_fpixels("1i") / 96)
+        width = min(round(width * scale), self.winfo_screenwidth() - 40)
+        height = min(round(height * scale), self.winfo_screenheight() - 80)
         dialog = tk.Toplevel(self)
         dialog.title(title)
         dialog.geometry(f"{width}x{height}")

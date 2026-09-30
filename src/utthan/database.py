@@ -28,6 +28,16 @@ def from_paise(value: int | None) -> float:
     return (value or 0) / 100
 
 
+PAYMENT_COMPONENT_COLUMNS = (
+    "contribution_paise",
+    "principal_paise",
+    "interest_paise",
+    "arrears_paise",
+    "late_fee_paise",
+)
+AUTO_BACKUP_PREFIX = "utthan-auto-"
+
+
 def default_data_dir() -> Path:
     override = os.environ.get("UTTHAN_DATA_DIR")
     if override:
@@ -176,9 +186,19 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            self._migrate(connection)
             count = connection.execute("SELECT COUNT(*) FROM members").fetchone()[0]
             if count == 0:
                 self._seed_opening_balances(connection)
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in connection.execute("PRAGMA table_info(transactions)")}
+        for column in PAYMENT_COMPONENT_COLUMNS:
+            if column not in existing:
+                connection.execute(
+                    f"ALTER TABLE transactions ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _seed_opening_balances(self, connection: sqlite3.Connection) -> None:
         settings = {
@@ -575,8 +595,10 @@ class Database:
             total = sum(paise)
             cursor = connection.execute(
                 """INSERT INTO transactions(transaction_date, member_id, due_id,
-                   transaction_type, amount_paise, payment_method, reference, notes)
-                   VALUES(?, ?, ?, 'Member payment', ?, ?, ?, ?)""",
+                   transaction_type, amount_paise, payment_method, reference, notes,
+                   contribution_paise, principal_paise, interest_paise, arrears_paise,
+                   late_fee_paise)
+                   VALUES(?, ?, ?, 'Member payment', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     payment_date,
                     due["member_id"],
@@ -585,6 +607,7 @@ class Database:
                     payment_method,
                     reference.strip(),
                     notes.strip(),
+                    *paise,
                 ),
             )
             updated = connection.execute("SELECT * FROM dues WHERE id = ?", (due_id,)).fetchone()
@@ -603,6 +626,67 @@ class Database:
             connection.execute("UPDATE dues SET status = ? WHERE id = ?", (status, due_id))
             self._audit(connection, "PAYMENT", "due", due_id, f"Rs {total / 100:,.2f}")
             return int(cursor.lastrowid)
+
+    def receipt_details(self, transaction_id: int) -> dict | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT t.*, m.member_no, m.name, p.year, p.month,
+                    d.contribution_due_paise, d.emi_due_paise, d.interest_due_paise,
+                    d.arrears_due_paise, d.late_fee_paise AS late_fee_due_paise,
+                    d.contribution_paid_paise, d.principal_paid_paise, d.interest_paid_paise,
+                    d.arrears_paid_paise, d.late_fee_paid_paise
+                    FROM transactions t JOIN members m ON m.id = t.member_id
+                    LEFT JOIN dues d ON d.id = t.due_id
+                    LEFT JOIN periods p ON p.id = d.period_id
+                    WHERE t.id = ? AND t.transaction_type = 'Member payment'""",
+                (transaction_id,),
+            ).fetchone()
+            if not row:
+                return None
+            components = [row[column] for column in PAYMENT_COMPONENT_COLUMNS]
+            paid_before = payment_count = total_due = 0
+            if row["due_id"]:
+                paid_before = connection.execute(
+                    """SELECT COALESCE(SUM(amount_paise), 0) FROM transactions
+                       WHERE due_id = ? AND transaction_type = 'Member payment' AND id < ?""",
+                    (row["due_id"], transaction_id),
+                ).fetchone()[0]
+                payment_count = connection.execute(
+                    """SELECT COUNT(*) FROM transactions
+                       WHERE due_id = ? AND transaction_type = 'Member payment'""",
+                    (row["due_id"],),
+                ).fetchone()[0]
+                total_due = (
+                    row["contribution_due_paise"] + row["emi_due_paise"]
+                    + row["interest_due_paise"] + row["arrears_due_paise"]
+                    + row["late_fee_due_paise"]
+                )
+            if sum(components) == 0 and payment_count == 1:
+                # Payments saved before the split was stored: a single payment equals the due's paid split.
+                legacy = [
+                    row["contribution_paid_paise"], row["principal_paid_paise"],
+                    row["interest_paid_paise"], row["arrears_paid_paise"],
+                    row["late_fee_paid_paise"],
+                ]
+                if sum(legacy) == row["amount_paise"]:
+                    components = legacy
+            return {
+                "transaction_id": row["id"],
+                "transaction_date": row["transaction_date"],
+                "member_no": row["member_no"],
+                "name": row["name"],
+                "year": row["year"],
+                "month": row["month"],
+                "payment_method": row["payment_method"],
+                "reference": row["reference"],
+                "notes": row["notes"],
+                "amount_paise": row["amount_paise"],
+                "components": components if sum(components) == row["amount_paise"] else None,
+                "has_due": bool(row["due_id"]),
+                "total_due_paise": total_due,
+                "paid_before_paise": paid_before,
+                "balance_after_paise": max(0, total_due - paid_before - row["amount_paise"]),
+            }
 
     def add_expense(self, expense_date: str, category: str, amount: float, notes: str = "") -> int:
         if amount <= 0 or not category.strip():
@@ -692,9 +776,34 @@ class Database:
     def backup(self) -> Path:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         target = self.backups_dir / f"utthan-backup-{stamp}.db"
+        self._copy_database(target)
+        return target
+
+    def _copy_database(self, target: Path) -> None:
         with closing(sqlite3.connect(self.path)) as source, closing(sqlite3.connect(target)) as destination:
             source.backup(destination)
+
+    @property
+    def auto_backups_dir(self) -> Path:
+        return self.backups_dir / "Automatic"
+
+    def auto_backup(self, keep: int = 30) -> Path | None:
+        """Create one automatic backup per day and keep only the newest `keep` copies."""
+        folder = self.auto_backups_dir
+        folder.mkdir(parents=True, exist_ok=True)
+        today = date.today().strftime("%Y%m%d")
+        if any(folder.glob(f"{AUTO_BACKUP_PREFIX}{today}-*.db")):
+            return None
+        target = folder / f"{AUTO_BACKUP_PREFIX}{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
+        self._copy_database(target)
+        for old in sorted(folder.glob(f"{AUTO_BACKUP_PREFIX}*.db"))[:-keep]:
+            old.unlink(missing_ok=True)
         return target
+
+    def latest_auto_backup(self) -> Path | None:
+        folder = self.auto_backups_dir
+        backups = sorted(folder.glob(f"{AUTO_BACKUP_PREFIX}*.db")) if folder.exists() else []
+        return backups[-1] if backups else None
 
     def restore(self, source: Path) -> None:
         if not source.exists():

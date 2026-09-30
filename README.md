@@ -20,6 +20,11 @@ On first launch, the application creates its database and imports the 60 members
 - old-due and late-fee tracking;
 - full or partial payment entry;
 - printable monthly due lists, member bills and payment receipts;
+- two-copy receipts (member and office) with the payment split, amount in words and remaining period balance;
+- one-click PDF of all unpaid member bills for a period;
+- receipt reprint from the cashbook (select a payment, or double-click it);
+- live "paying now" total while entering a payment;
+- automatic daily backup (last 30 kept) and a safety backup before a period is closed;
 - cashbook and expenses;
 - CSV export;
 - local backup and restore;
@@ -32,7 +37,7 @@ The EXE stores working data outside its installation folder:
 
 `%LOCALAPPDATA%\UtthanSociety\utthan_society.db`
 
-Generated reports and backups are stored below the same folder. Their exact locations are displayed inside the application.
+Generated reports and backups are stored below the same folder. Their exact locations are displayed inside the application. Automatic daily backups are kept in `Backups\Automatic`.
 
 Create a backup regularly and copy important backups to another physical drive. Data remains only on the local computer unless a user manually copies it elsewhere.
 

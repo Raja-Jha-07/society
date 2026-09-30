@@ -3,8 +3,9 @@ from __future__ import annotations
 import csv
 import os
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
@@ -21,26 +22,40 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+from reportlab.platypus.flowables import HRFlowable
 
 from .database import Database, from_paise
 
 
-def _register_font() -> str:
-    candidates = [
-        Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "arial.ttf",
-        Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "Nirmala.ttf",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            try:
-                pdfmetrics.registerFont(TTFont("UtthanFont", candidate))
-                return "UtthanFont"
-            except Exception:
-                pass
-    return "Helvetica"
+def _register_fonts() -> tuple[str, str]:
+    fonts_dir = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+    for regular, bold in (("arial.ttf", "arialbd.ttf"), ("Nirmala.ttf", "NirmalaB.ttf")):
+        try:
+            pdfmetrics.registerFont(TTFont("UtthanFont", fonts_dir / regular))
+        except Exception:
+            continue
+        bold_name = "UtthanFont"
+        try:
+            pdfmetrics.registerFont(TTFont("UtthanFont-Bold", fonts_dir / bold))
+            bold_name = "UtthanFont-Bold"
+        except Exception:
+            pass
+        pdfmetrics.registerFontFamily(
+            "UtthanFont", normal="UtthanFont", bold=bold_name,
+            italic="UtthanFont", boldItalic=bold_name,
+        )
+        return "UtthanFont", bold_name
+    return "Helvetica", "Helvetica-Bold"
 
 
-FONT = _register_font()
+FONT, FONT_BOLD = _register_fonts()
+NAVY = colors.HexColor("#173F5F")
+BLUE = colors.HexColor("#20639B")
+LIGHT = colors.HexColor("#E8F1F8")
+GRID = colors.HexColor("#9FB3C8")
+MUTED = colors.HexColor("#627D98")
+GOOD = colors.HexColor("#236B5E")
+WARN = colors.HexColor("#8A2C23")
 MONTHS = [
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
@@ -49,6 +64,58 @@ MONTHS = [
 
 def money(paise: int | None) -> str:
     return f"Rs. {from_paise(paise):,.2f}"
+
+
+_ONES = [
+    "", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
+    "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen",
+    "Eighteen", "Nineteen",
+]
+_TENS = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+
+
+def _two_digits(value: int) -> str:
+    if value < 20:
+        return _ONES[value]
+    tens, ones = divmod(value, 10)
+    return f"{_TENS[tens]} {_ONES[ones]}".strip()
+
+
+def number_in_words(value: int) -> str:
+    """Indian numbering: crore, lakh, thousand, hundred."""
+    if value == 0:
+        return "Zero"
+    crore, value = divmod(value, 10_000_000)
+    lakh, value = divmod(value, 100_000)
+    thousand, value = divmod(value, 1000)
+    hundred, value = divmod(value, 100)
+    parts = []
+    if crore:
+        parts.append(f"{number_in_words(crore)} Crore")
+    if lakh:
+        parts.append(f"{_two_digits(lakh)} Lakh")
+    if thousand:
+        parts.append(f"{_two_digits(thousand)} Thousand")
+    if hundred:
+        parts.append(f"{_ONES[hundred]} Hundred")
+    if value:
+        parts.append(_two_digits(value))
+    return " ".join(parts)
+
+
+def amount_in_words(paise: int) -> str:
+    rupees, remainder = divmod(abs(int(paise)), 100)
+    text = f"Rupees {number_in_words(rupees)}"
+    if remainder:
+        text += f" and {_two_digits(remainder)} Paise"
+    return f"{text} Only"
+
+
+def _display_date(value: str) -> str:
+    try:
+        return date.fromisoformat(value).strftime("%d %b %Y")
+    except (TypeError, ValueError):
+        return value or ""
 
 
 def safe_name(value: str) -> str:
@@ -151,16 +218,41 @@ def generate_member_bill(db: Database, due_id: int) -> Path:
     target = db.reports_dir / (
         f"Bill-{row['year']:04d}-{row['month']:02d}-{safe_name(row['name'])}.pdf"
     )
-    document = SimpleDocTemplate(
+    _bill_document(target).build(_bill_story(db, row))
+    return target
+
+
+def generate_all_bills(db: Database, period_id: int) -> Path:
+    rows = [
+        row for row in db.period_dues(period_id)
+        if row["total_due_paise"] > row["total_paid_paise"]
+    ]
+    if not rows:
+        raise ValueError("Every member has fully paid this period")
+    target = db.reports_dir / f"All-Bills-{rows[0]['year']:04d}-{rows[0]['month']:02d}.pdf"
+    story: list = []
+    for index, row in enumerate(rows):
+        if index:
+            story.append(PageBreak())
+        story.extend(_bill_story(db, row))
+    _bill_document(target).build(story)
+    return target
+
+
+def _bill_document(target: Path) -> SimpleDocTemplate:
+    return SimpleDocTemplate(
         str(target), pagesize=A4, rightMargin=22 * mm, leftMargin=22 * mm,
         topMargin=18 * mm, bottomMargin=18 * mm,
     )
+
+
+def _bill_story(db: Database, row) -> list:
     story: list = []
     _header(story, db, f"Monthly Due Bill - {MONTHS[row['month'] - 1]} {row['year']}")
     styles = getSampleStyleSheet()
     body = ParagraphStyle("Body", parent=styles["BodyText"], fontName=FONT, fontSize=10, leading=15)
     story.append(Paragraph(f"Member No.: <b>{row['member_no']}</b>", body))
-    story.append(Paragraph(f"Member Name: <b>{row['name']}</b>", body))
+    story.append(Paragraph(f"Member Name: <b>{escape(row['name'])}</b>", body))
     story.append(Spacer(1, 7 * mm))
     paid = row["total_paid_paise"]
     total = row["total_due_paise"]
@@ -194,55 +286,225 @@ def generate_member_bill(db: Database, due_id: int) -> Path:
         f"Generated {datetime.now().strftime('%d %b %Y, %I:%M %p')} | Data stored locally",
         ParagraphStyle("Foot", parent=body, fontSize=8, textColor=colors.grey),
     ))
-    document.build(story)
-    return target
+    return story
+
+
+RECEIPT_COMPONENT_LABELS = [
+    "Monthly contribution (savings)",
+    "Loan principal (EMI)",
+    "Interest on loan",
+    "Previous due",
+    "Late fee",
+]
+
+
+def _text_style(
+    name: str, size: float = 8.5, font: str = FONT, color=colors.black, align: int = TA_LEFT,
+) -> ParagraphStyle:
+    return ParagraphStyle(
+        name, fontName=font, fontSize=size, leading=size * 1.3, textColor=color, alignment=align,
+    )
+
+
+def _receipt_heading(society: str, group: str, copy_label: str, inner: float) -> Table:
+    heading = Table(
+        [
+            [Paragraph(escape(society), _text_style("RcSociety", 13, FONT_BOLD, NAVY)),
+             Paragraph(copy_label, _text_style("RcCopy", 8, FONT_BOLD, BLUE, TA_RIGHT))],
+            [Paragraph(escape(group), _text_style("RcGroup", 8.5, color=MUTED)),
+             Paragraph("PAYMENT RECEIPT", _text_style("RcTitle", 11, FONT_BOLD, NAVY, TA_RIGHT))],
+        ],
+        colWidths=[inner * 0.62, inner * 0.38],
+    )
+    heading.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, -1), (-1, -1), 4),
+        ("LINEBELOW", (0, -1), (-1, -1), 1.2, NAVY),
+    ]))
+    return heading
+
+
+def _receipt_info(details: dict, inner: float) -> Table:
+    cell = _text_style("RcCell")
+    period = f"{MONTHS[details['month'] - 1]} {details['year']}" if details["month"] else "-"
+    info = Table(
+        [
+            ["Receipt No.", f"UT-{details['transaction_id']:06d}",
+             "Receipt date", _display_date(details["transaction_date"])],
+            ["Member", Paragraph(f"{details['member_no']} - {escape(details['name'])}", cell),
+             "For period", period],
+            ["Payment method", details["payment_method"],
+             "Reference / UTR", Paragraph(escape(details["reference"] or "-"), cell)],
+        ],
+        colWidths=[inner * 0.16, inner * 0.36, inner * 0.18, inner * 0.30],
+    )
+    info.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), FONT),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("FONTNAME", (1, 0), (1, 0), FONT_BOLD),
+        ("BACKGROUND", (0, 0), (0, -1), LIGHT),
+        ("BACKGROUND", (2, 0), (2, -1), LIGHT),
+        ("TEXTCOLOR", (0, 0), (0, -1), NAVY),
+        ("TEXTCOLOR", (2, 0), (2, -1), NAVY),
+        ("GRID", (0, 0), (-1, -1), 0.4, GRID),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    return info
+
+
+def _receipt_amounts(details: dict, inner: float) -> Table:
+    if details["components"] is not None:
+        rows = [
+            [label, money(value) if value else "-"]
+            for label, value in zip(RECEIPT_COMPONENT_LABELS, details["components"])
+        ]
+    else:
+        rows = [["Payment received (split not recorded)", money(details["amount_paise"])]]
+    breakdown = Table(
+        [["Payment details", "Amount"], *rows, ["Total received", money(details["amount_paise"])]],
+        colWidths=[inner * 0.36, inner * 0.18],
+    )
+    breakdown.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), FONT),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
+        ("FONTNAME", (0, -1), (-1, -1), FONT_BOLD),
+        ("FONTSIZE", (0, -1), (-1, -1), 9.5),
+        ("BACKGROUND", (0, -1), (-1, -1), LIGHT),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("GRID", (0, 0), (-1, -1), 0.4, GRID),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]))
+    if not details["has_due"]:
+        return breakdown
+    balance = details["balance_after_paise"]
+    status, status_color = ("PAID IN FULL", GOOD) if balance == 0 else ("BALANCE PENDING", WARN)
+    summary = Table(
+        [
+            ["Period account", ""],
+            ["Total due for period", money(details["total_due_paise"])],
+            ["Paid earlier", money(details["paid_before_paise"])],
+            ["Paid now", money(details["amount_paise"])],
+            ["Balance remaining", money(balance)],
+            [status, ""],
+        ],
+        colWidths=[inner * 0.26, inner * 0.16],
+    )
+    summary.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), FONT),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("SPAN", (0, 0), (-1, 0)),
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
+        ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+        ("FONTNAME", (0, -2), (-1, -2), FONT_BOLD),
+        ("BACKGROUND", (0, -2), (-1, -2), LIGHT),
+        ("SPAN", (0, -1), (-1, -1)),
+        ("ALIGN", (0, -1), (-1, -1), "CENTER"),
+        ("FONTNAME", (0, -1), (-1, -1), FONT_BOLD),
+        ("FONTSIZE", (0, -1), (-1, -1), 9.5),
+        ("TEXTCOLOR", (0, -1), (-1, -1), status_color),
+        ("GRID", (0, 0), (-1, -1), 0.4, GRID),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]))
+    layout = Table([[breakdown, "", summary]], colWidths=[inner * 0.54, inner * 0.04, inner * 0.42])
+    layout.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return layout
+
+
+def _receipt_copy(
+    details: dict, society: str, group: str, copy_label: str, width: float, printed: str,
+) -> Table:
+    inner = width - 6 * mm
+    words = Table(
+        [[Paragraph(
+            f"Amount in words: <b>{amount_in_words(details['amount_paise'])}</b>",
+            _text_style("RcWords", 9),
+        )]],
+        colWidths=[inner],
+    )
+    words.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), LIGHT),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    signatures = Table(
+        [["", "", ""], ["Received by (Treasurer / Secretary)", "", "Member signature"]],
+        colWidths=[inner * 0.4, inner * 0.2, inner * 0.4],
+        rowHeights=[11 * mm, None],
+    )
+    signatures.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), FONT),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("TEXTCOLOR", (0, 0), (-1, -1), MUTED),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("LINEABOVE", (0, 1), (0, 1), 0.6, NAVY),
+        ("LINEABOVE", (2, 1), (2, 1), 0.6, NAVY),
+    ]))
+    rows: list[list] = [
+        [_receipt_heading(society, group, copy_label, inner)],
+        [_receipt_info(details, inner)],
+        [_receipt_amounts(details, inner)],
+        [words],
+    ]
+    if details["notes"]:
+        rows.append([Paragraph(f"Notes: {escape(details['notes'])}", _text_style("RcNotes", 8))])
+    rows.append([signatures])
+    rows.append([Paragraph(
+        f"Computer-generated receipt from Utthan Society Manager | Printed {printed}",
+        _text_style("RcFoot", 7, color=MUTED, align=TA_CENTER),
+    )])
+    outer = Table(rows, colWidths=[width])
+    outer.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.9, NAVY),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3 * mm),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3 * mm),
+        ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (0, 0), 3 * mm),
+        ("BOTTOMPADDING", (0, -1), (-1, -1), 2.5 * mm),
+    ]))
+    return outer
 
 
 def generate_receipt(db: Database, transaction_id: int) -> Path:
-    with db.connect() as connection:
-        row = connection.execute(
-            """SELECT t.*, m.member_no, m.name, d.contribution_paid_paise,
-                d.principal_paid_paise, d.interest_paid_paise, d.arrears_paid_paise,
-                d.late_fee_paid_paise, p.year, p.month
-                FROM transactions t JOIN members m ON m.id = t.member_id
-                LEFT JOIN dues d ON d.id = t.due_id LEFT JOIN periods p ON p.id = d.period_id
-                WHERE t.id = ?""",
-            (transaction_id,),
-        ).fetchone()
-    if not row:
-        raise ValueError("Payment transaction not found")
-    target = db.reports_dir / f"Receipt-{transaction_id:06d}-{safe_name(row['name'])}.pdf"
+    details = db.receipt_details(transaction_id)
+    if not details:
+        raise ValueError("Receipts are available only for member payments")
+    society = db.setting("society_name", "UTHAN CREATIVE SOCIETY")
+    group = db.setting("group_name", "")
+    target = db.reports_dir / f"Receipt-{transaction_id:06d}-{safe_name(details['name'])}.pdf"
     document = SimpleDocTemplate(
-        str(target), pagesize=A4, rightMargin=28 * mm, leftMargin=28 * mm,
-        topMargin=22 * mm, bottomMargin=22 * mm,
+        str(target), pagesize=A4, rightMargin=12 * mm, leftMargin=12 * mm,
+        topMargin=10 * mm, bottomMargin=10 * mm,
+        title=f"Receipt UT-{transaction_id:06d}", author=society,
     )
-    story: list = []
-    _header(story, db, "Payment Receipt")
-    style = ParagraphStyle("Body", fontName=FONT, fontSize=11, leading=17)
-    info = [
-        ["Receipt No.", f"UT-{transaction_id:06d}"],
-        ["Date", row["transaction_date"]],
-        ["Member", f"{row['member_no']} - {row['name']}"],
-        ["For period", f"{MONTHS[row['month'] - 1]} {row['year']}" if row["month"] else ""],
-        ["Payment method", row["payment_method"]],
-        ["Reference", row["reference"] or "-"],
-        ["Amount received", money(row["amount_paise"])],
+    printed = datetime.now().strftime("%d %b %Y, %I:%M %p")
+    story = [
+        _receipt_copy(details, society, group, "MEMBER COPY", document.width, printed),
+        Spacer(1, 4 * mm),
+        HRFlowable(width="100%", thickness=0.6, color=GRID, dash=(4, 3), spaceAfter=1 * mm),
+        Paragraph("cut here", _text_style("RcCut", 7, color=MUTED, align=TA_CENTER)),
+        Spacer(1, 3 * mm),
+        _receipt_copy(details, society, group, "OFFICE COPY", document.width, printed),
     ]
-    table = Table(info, colWidths=[45 * mm, 95 * mm])
-    table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), FONT),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#E8F1F8")),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#9FB3C8")),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("FONTNAME", (1, -1), (1, -1), FONT),
-        ("FONTSIZE", (1, -1), (1, -1), 13),
-    ]))
-    story.append(table)
-    story.append(Spacer(1, 18 * mm))
-    story.append(Paragraph("Received by: _________________________", style))
-    story.append(Spacer(1, 8 * mm))
-    story.append(Paragraph("Member signature: ____________________", style))
     document.build(story)
     return target
 
