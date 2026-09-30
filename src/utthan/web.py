@@ -6,9 +6,10 @@ import io
 import os
 import re
 import secrets
+import sqlite3
 import string
 import tempfile
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -26,12 +27,14 @@ from flask import (
     session,
     url_for,
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .database import Database, from_paise, reset_audit_actor, set_audit_actor
 from .reports import (
     MONTHS,
     export_period_csv,
+    generate_all_bills,
     generate_due_list,
     generate_member_bill,
     generate_receipt,
@@ -40,6 +43,8 @@ from .reports import (
 View = TypeVar("View", bound=Callable[..., Any])
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,50}$")
 LOGIN_TEMPLATE = "login.html"
+CREDENTIALS_TEMPLATE = "credentials.html"
+LOCAL_ADDRESSES = {"127.0.0.1", "::1", "localhost"}
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -127,6 +132,12 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
     )
     if test_config:
         app.config.update(test_config)
+    trusted_proxies = int(os.environ.get("UTTHAN_TRUSTED_PROXIES", "0") or 0)
+    if trusted_proxies > 0:
+        # Behind Nginx/IIS/Caddy: use the forwarded client IP and HTTPS scheme.
+        app.wsgi_app = ProxyFix(  # type: ignore[method-assign]
+            app.wsgi_app, x_for=trusted_proxies, x_proto=trusted_proxies, x_host=trusted_proxies
+        )
     app.extensions["utthan_db"] = db
 
     def csrf_token() -> str:
@@ -141,6 +152,33 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
 
     def client_details() -> tuple[str, str]:
         return (request.remote_addr or "unknown", request.user_agent.string or "")
+
+    def issue_member_login(member: Any) -> dict[str, str]:
+        base = f"member{member['member_no']}"
+        username, suffix = base, 1
+        while current_db().user_by_username(username) is not None:
+            suffix += 1
+            username = f"{base}-{suffix}"
+        password = _temporary_password()
+        current_db().create_user(
+            username, generate_password_hash(password), "member", member["id"],
+            must_change_password=True,
+        )
+        return {
+            "member_no": str(member["member_no"]), "name": member["name"],
+            "username": username, "password": password,
+        }
+
+    def show_credentials(slips: list[dict[str, str]], title: str) -> str:
+        return render_template(
+            CREDENTIALS_TEMPLATE, slips=slips, title=title, login_url=url_for("login", _external=True),
+        )
+
+    def run_auto_backup() -> None:
+        try:
+            current_db().auto_backup()
+        except (OSError, sqlite3.Error):
+            app.logger.exception("Automatic backup failed")
 
     @app.before_request
     def load_identity() -> Response | None:
@@ -196,6 +234,18 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
     def money(value: int | None) -> str:
         return f"₹{from_paise(value):,.2f}"
 
+    @app.template_filter("when")
+    def when(value: str | None) -> str:
+        if not value:
+            return "Never"
+        try:
+            moment = datetime.fromisoformat(value.replace(" ", "T"))
+        except ValueError:
+            return value
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.astimezone().strftime("%d %b %Y, %I:%M %p")
+
     def login_required(view: View) -> View:
         @wraps(view)
         def wrapped(*args: Any, **kwargs: Any) -> Any:
@@ -227,8 +277,18 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
     def setup() -> str | Response:
         if current_db().account_count() != 0:
             return redirect(url_for("index"))
+        setup_token = os.environ.get("UTTHAN_SETUP_TOKEN", "")
+        # Requests relayed by a reverse proxy are never treated as local, even from 127.0.0.1.
+        proxied = "X-Forwarded-For" in request.headers or "Forwarded" in request.headers
+        if not setup_token and (proxied or request.remote_addr not in LOCAL_ADDRESSES):
+            abort(403, "First-time setup is only allowed from the server itself unless "
+                       "UTTHAN_SETUP_TOKEN is configured.")
         if request.method == "POST":
             try:
+                if setup_token and not hmac.compare_digest(
+                    request.form.get("setup_token", ""), setup_token
+                ):
+                    raise ValueError("Setup code is incorrect.")
                 username = _username(request.form.get("username", ""))
                 password = request.form.get("password", "")
                 if error := _password_error(password):
@@ -245,7 +305,7 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
                 return redirect(url_for("login"))
             except ValueError as exc:
                 flash(str(exc), "error")
-        return render_template("setup.html")
+        return render_template("setup.html", setup_token_required=bool(setup_token))
 
     @app.route("/login", methods=["GET", "POST"])
     def login() -> str | Response | tuple[str, int]:
@@ -357,10 +417,12 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
     @app.get("/admin")
     @admin_required
     def admin_dashboard() -> str:
+        run_auto_backup()
         return render_template(
             "admin_dashboard.html",
             stats=current_db().dashboard(),
             transactions=current_db().transactions(limit=12),
+            login_count=sum(1 for row in current_db().list_users() if row["role"] == "member"),
         )
 
     @app.route("/admin/members", methods=["GET", "POST"])
@@ -377,7 +439,7 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
                     _amount(request.form.get("opening_contribution", "0"), "Opening savings"),
                     request.form.get("notes", ""),
                 )
-                flash("Member added. Create a login from User Accounts.", "success")
+                flash("Member added. Use Generate login to give them portal access.", "success")
                 return redirect(url_for("members"))
             except ValueError as exc:
                 flash(str(exc), "error")
@@ -391,7 +453,23 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
                 or query in row["phone"].lower()
                 or query == str(row["member_no"])
             ]
-        return render_template("members.html", members=member_rows, query=query)
+        accounts = {
+            row["member_id"]: row for row in current_db().list_users() if row["member_id"]
+        }
+        return render_template(
+            "members.html", members=member_rows, query=query, accounts=accounts,
+        )
+
+    @app.post("/admin/members/<int:member_id>/login")
+    @admin_required
+    def generate_member_login(member_id: int) -> str | Response:
+        member = current_db().member(member_id)
+        if member is None:
+            abort(404)
+        if current_db().user_for_member(member_id) is not None:
+            flash("This member already has a login. Use Reset password instead.", "error")
+            return redirect(url_for("users"))
+        return show_credentials([issue_member_login(member)], "Member login created")
 
     @app.get("/admin/members/<int:member_id>")
     @admin_required
@@ -430,23 +508,28 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
     def users() -> str | Response:
         if request.method == "POST":
             try:
-                username = _username(request.form.get("username", ""))
-                password = request.form.get("password", "")
                 role = request.form.get("role", "member")
-                if error := _password_error(password):
-                    raise ValueError(error)
-                member_id = int(request.form["member_id"]) if role == "member" else None
+                if role == "member":
+                    member = current_db().member(int(request.form.get("member_id") or 0))
+                    if member is None:
+                        raise ValueError("Select the member who needs a login.")
+                    if current_db().user_for_member(member["id"]) is not None:
+                        raise ValueError("This member already has a login.")
+                    return show_credentials([issue_member_login(member)], "Member login created")
+                if role != "admin":
+                    raise ValueError("Invalid account role")
+                username = _username(request.form.get("username", ""))
+                password = _temporary_password()
                 current_db().create_user(
-                    username,
-                    generate_password_hash(password),
-                    role,
-                    member_id,
-                    must_change_password=True,
+                    username, generate_password_hash(password), "admin", must_change_password=True,
                 )
-                flash("Account created. The user must change the temporary password.", "success")
-                return redirect(url_for("users"))
-            except (KeyError, ValueError) as exc:
-                flash(str(exc) or "Select a member.", "error")
+                return show_credentials(
+                    [{"member_no": "-", "name": "Administrator", "username": username,
+                      "password": password}],
+                    "Administrator login created",
+                )
+            except ValueError as exc:
+                flash(str(exc), "error")
         return render_template(
             "users.html",
             users=current_db().list_users(),
@@ -455,25 +538,19 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
 
     @app.post("/admin/users/provision")
     @admin_required
-    def provision_users() -> Response:
-        rows: list[list[str]] = [["Member No", "Member Name", "Username", "Temporary Password"]]
-        for member in current_db().members_without_users():
-            username = f"member{member['member_no']}"
-            password = _temporary_password()
-            current_db().create_user(
-                username,
-                generate_password_hash(password),
-                "member",
-                member["id"],
-                must_change_password=True,
-            )
-            rows.append([str(member["member_no"]), member["name"], username, password])
-        if len(rows) == 1:
-            flash("Every active member already has an account.", "success")
+    def provision_users() -> str | Response:
+        slips = [issue_member_login(member) for member in current_db().members_without_users()]
+        if not slips:
+            flash("Every active member already has a login.", "success")
             return redirect(url_for("users"))
+        if request.form.get("output") != "csv":
+            return show_credentials(slips, f"{len(slips)} member logins created")
         output = io.StringIO(newline="")
         writer = csv.writer(output)
-        writer.writerows(rows)
+        writer.writerow(["Member No", "Member Name", "Username", "Temporary Password"])
+        writer.writerows(
+            [slip["member_no"], slip["name"], slip["username"], slip["password"]] for slip in slips
+        )
         return Response(
             "\ufeff" + output.getvalue(),
             mimetype="text/csv",
@@ -482,19 +559,23 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
 
     @app.post("/admin/users/<int:user_id>/reset")
     @admin_required
-    def reset_user_password(user_id: int) -> Response:
+    def reset_user_password(user_id: int) -> str | Response:
         target = current_db().user(user_id)
         if target is None:
             abort(404)
-        password = request.form.get("password", "")
-        if error := _password_error(password):
-            flash(error, "error")
-        else:
-            current_db().update_user_password(
-                user_id, generate_password_hash(password), must_change_password=True
-            )
-            flash("Temporary password saved. The user must change it at next login.", "success")
-        return redirect(url_for("users"))
+        if target["id"] == g.user["id"]:
+            flash("Use Change password for your own account.", "error")
+            return redirect(url_for("users"))
+        password = _temporary_password()
+        current_db().update_user_password(
+            user_id, generate_password_hash(password), must_change_password=True
+        )
+        return show_credentials(
+            [{"member_no": str(target["member_no"] or "-"),
+              "name": target["member_name"] or "Administrator",
+              "username": target["username"], "password": password}],
+            "Password reset",
+        )
 
     @app.post("/admin/users/<int:user_id>/status")
     @admin_required
@@ -553,12 +634,15 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
                 for row in due_rows
                 if query in row["name"].lower() or query == str(row["member_no"])
             ]
+        receipt_id = request.args.get("receipt", type=int)
+        receipt_info = current_db().receipt_details(receipt_id) if receipt_id else None
         return render_template(
             "dues.html",
             periods=periods,
             selected=selected,
             dues=due_rows,
             query=query,
+            receipt_info=receipt_info,
         )
 
     @app.post("/admin/dues/generate")
@@ -593,7 +677,7 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
                     request.form.get("notes", ""),
                 )
                 flash(f"Payment saved. Receipt UT-{transaction_id:06d} is ready.", "success")
-                return redirect(url_for("dues", period_id=due["period_id"]))
+                return redirect(url_for("dues", period_id=due["period_id"], receipt=transaction_id))
             except ValueError as exc:
                 flash(str(exc), "error")
         outstanding = {
@@ -610,8 +694,13 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
     def close_period(period_id: int) -> Response:
         if not any(row["id"] == period_id for row in current_db().list_periods()):
             abort(404)
+        try:
+            current_db().backup()
+        except (OSError, sqlite3.Error):
+            flash("Safety backup failed, so the period was not closed. Try again.", "error")
+            return redirect(url_for("dues", period_id=period_id))
         current_db().close_period(period_id)
-        flash("Period closed. It can no longer accept payments.", "success")
+        flash("Safety backup created and period closed. It can no longer accept payments.", "success")
         return redirect(url_for("dues", period_id=period_id))
 
     @app.route("/admin/cashbook", methods=["GET", "POST"])
@@ -668,10 +757,33 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
         }
         return render_template("settings.html", values=values)
 
+    @app.get("/admin/reports")
+    @admin_required
+    def reports_page() -> str:
+        latest = current_db().latest_auto_backup()
+        return render_template(
+            "reports.html",
+            periods=current_db().list_periods(),
+            latest_auto_backup=(
+                datetime.fromtimestamp(latest.stat().st_mtime).strftime("%d %b %Y, %I:%M %p")
+                if latest else None
+            ),
+        )
+
     @app.get("/admin/reports/due-list/<int:period_id>.pdf")
     @admin_required
     def due_list_report(period_id: int) -> Response:
         path = generate_due_list(current_db(), period_id)
+        return send_file(path, as_attachment=True, download_name=path.name)
+
+    @app.get("/admin/reports/all-bills/<int:period_id>.pdf")
+    @admin_required
+    def all_bills_report(period_id: int) -> Response:
+        try:
+            path = generate_all_bills(current_db(), period_id)
+        except ValueError as exc:
+            flash(str(exc), "success")
+            return redirect(url_for("dues", period_id=period_id))
         return send_file(path, as_attachment=True, download_name=path.name)
 
     @app.get("/admin/reports/due-list/<int:period_id>.csv")
@@ -692,7 +804,7 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
         uploaded = request.files.get("backup_file")
         if uploaded is None or not uploaded.filename:
             flash("Choose a web portal backup file to restore.", "error")
-            return redirect(url_for("cashbook"))
+            return redirect(url_for("reports_page"))
         try:
             with tempfile.TemporaryDirectory() as temp:
                 source = Path(temp) / "uploaded-backup.db"
@@ -708,7 +820,7 @@ def create_app(data_dir: Path | None = None, test_config: dict[str, Any] | None 
             return redirect(url_for("login"))
         except ValueError as exc:
             flash(str(exc), "error")
-            return redirect(url_for("cashbook"))
+            return redirect(url_for("reports_page"))
 
     @app.get("/admin/activity")
     @admin_required

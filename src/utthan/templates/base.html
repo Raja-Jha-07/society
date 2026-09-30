@@ -6,25 +6,28 @@
   <title>{% block title %}Utthan Portal{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='web.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='member-details.css') }}">
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </head>
 <body class="{% if not current_user %}auth-page{% endif %}">
   {% if current_user %}
   <aside class="sidebar">
-    <a class="brand" href="{{ url_for('index') }}"><strong>UTTHAN</strong><span>Private Society Portal</span></a>
+    <a class="brand" href="{{ url_for('index') }}"><strong>UTTHAN</strong><span>Society Manager</span></a>
     <nav>
+      {% set endpoint = request.endpoint or '' %}
       {% if current_user.role == 'admin' %}
-      <a href="{{ url_for('admin_dashboard') }}">Overview</a>
-      <a href="{{ url_for('dues') }}">Monthly dues</a>
-      <a href="{{ url_for('members') }}">Members</a>
-      <a href="{{ url_for('users') }}">User accounts</a>
-      <a href="{{ url_for('loans') }}">Loans</a>
-      <a href="{{ url_for('cashbook') }}">Cashbook</a>
-      <a href="{{ url_for('activity') }}">Activity &amp; security</a>
-      <a href="{{ url_for('settings') }}">Settings</a>
+      <a href="{{ url_for('admin_dashboard') }}" class="{{ 'active' if endpoint == 'admin_dashboard' }}">&#8962;&nbsp; Dashboard</a>
+      <a href="{{ url_for('dues') }}" class="{{ 'active' if endpoint in ('dues', 'payment') }}">&#9638;&nbsp; Monthly Dues</a>
+      <a href="{{ url_for('members') }}" class="{{ 'active' if endpoint in ('members', 'member_history') }}">&#9817;&nbsp; Members</a>
+      <a href="{{ url_for('loans') }}" class="{{ 'active' if endpoint == 'loans' }}">&#8377;&nbsp; Loans</a>
+      <a href="{{ url_for('cashbook') }}" class="{{ 'active' if endpoint == 'cashbook' }}">&#8597;&nbsp; Cashbook</a>
+      <a href="{{ url_for('reports_page') }}" class="{{ 'active' if endpoint == 'reports_page' }}">&#9636;&nbsp; Reports &amp; Backup</a>
+      <a href="{{ url_for('users') }}" class="{{ 'active' if endpoint == 'users' }}">&#9919;&nbsp; Member Logins</a>
+      <a href="{{ url_for('activity') }}" class="{{ 'active' if endpoint == 'activity' }}">&#9776;&nbsp; Activity &amp; Security</a>
+      <a href="{{ url_for('settings') }}" class="{{ 'active' if endpoint == 'settings' }}">&#9881;&nbsp; Settings</a>
       {% else %}
-      <a href="{{ url_for('portal') }}">My records</a>
+      <a href="{{ url_for('portal') }}" class="{{ 'active' if endpoint == 'portal' }}">&#8962;&nbsp; My Records</a>
       {% endif %}
-      <a href="{{ url_for('change_password') }}">Change password</a>
+      <a href="{{ url_for('change_password') }}" class="{{ 'active' if endpoint == 'change_password' }}">&#128273;&nbsp; Change Password</a>
     </nav>
     <div class="user-box">
       <span>Signed in as</span>
